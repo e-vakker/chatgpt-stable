@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "ChatGPT Stable")
         appMenu.addItem(withTitle: "About ChatGPT Stable", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        appMenu.addItem(withTitle: "Health Diagnostics...", action: #selector(showDiagnostics(_:)), keyEquivalent: "d").target = self
+        appMenu.addItem(withTitle: "Health Diagnostics...", action: #selector(showDiagnostics(_:)), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit ChatGPT Stable", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -36,15 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addMenuItem(navigationMenu, title: "Reload", action: #selector(reload(_:)), key: "r")
         let hard = addMenuItem(navigationMenu, title: "Hard Reload", action: #selector(hardReload(_:)), key: "r")
         hard.keyEquivalentModifierMask = [.command, .shift]
-        addMenuItem(navigationMenu, title: "Recover Now", action: #selector(recoverNow(_:)), key: "k")
+        addMenuItem(navigationMenu, title: "Recover Now", action: #selector(recoverNow(_:)), key: "")
         addMenuItem(navigationMenu, title: "Optimize Conversation Now", action: #selector(optimizeNow(_:)), key: "")
         let lean = addMenuItem(navigationMenu, title: "Lean Interface", action: #selector(toggleLeanInterface(_:)), key: "")
         lean.state = .on
         leanInterfaceItem = lean
         navigationMenu.addItem(.separator())
-        addMenuItem(navigationMenu, title: "ChatGPT Home", action: #selector(goHome(_:)), key: "0")
+        addMenuItem(navigationMenu, title: "ChatGPT Home", action: #selector(goHome(_:)), key: "")
         navigationMenu.addItem(.separator())
-        addMenuItem(navigationMenu, title: "Open Current Page in Browser", action: #selector(openInBrowser(_:)), key: "o")
+        addMenuItem(navigationMenu, title: "Open Current Page in Browser", action: #selector(openInBrowser(_:)), key: "")
         navigationItem.submenu = navigationMenu
         mainMenu.addItem(navigationItem)
 

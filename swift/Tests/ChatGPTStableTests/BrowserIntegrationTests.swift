@@ -45,6 +45,33 @@ final class BrowserIntegrationTests: XCTestCase {
         controller.window.close()
     }
 
+
+    func testElevatedPressureTightensConversationTail() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticConversation(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 700_000_000)
+        _ = try await Self.evaluate("window.__chatgptStablePerf?.pressure?.(10000)", in: controller.webView)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 12)
+        XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 28)
+        controller.window.close()
+    }
+
+    func testSeverePressureTightensConversationTailFurther() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticConversation(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 700_000_000)
+        _ = try await Self.evaluate("window.__chatgptStablePerf?.pressure?.(20000)", in: controller.webView)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 8)
+        XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 32)
+        controller.window.close()
+    }
+
     func testPerformanceOptimizerVirtualizesLargeMountedHistory() async throws {
         let controller = BrowserWindowController()
         controller.show(loadHome: false)
@@ -74,6 +101,33 @@ final class BrowserIntegrationTests: XCTestCase {
     }
 
 
+
+
+    func testLongVirtualizedConversationGetsConstantSizeThreadNavigator() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticShellOnlyConversation(turns: 120), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        let values = try await Self.evaluate("(() => { const r=document.getElementById('chatgpt-stable-thread-range'); return {rail:!!document.getElementById('chatgpt-stable-activity-rail'), max:r?.max, controls:document.querySelectorAll('#chatgpt-stable-thread-nav input').length, rows:document.querySelectorAll('#chatgpt-stable-activity-list button').length}; })()", in: controller.webView) as? [String: Any]
+        XCTAssertEqual(values?["rail"] as? Bool, true)
+        XCTAssertEqual(values?["max"] as? String, "119")
+        XCTAssertEqual((values?["controls"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual((values?["rows"] as? NSNumber)?.intValue, 0)
+        controller.window.close()
+    }
+
+    func testModernPersistentShellAndFallbackRoleSelectorsAreRecognized() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString("<html><body><div data-turn-id-container='x'><div data-role='assistant'><details data-testid='tool-browser'><summary>x</summary><div>x</div></details></div></div></body></html>", baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 700_000_000)
+        let snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["shells"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual((snapshot["roles"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual((snapshot["activityTotal"] as? NSNumber)?.intValue, 1)
+        controller.window.close()
+    }
+
     func testLeanInterfaceIndexesActivityWithoutReadingContent() async throws {
         let controller = BrowserWindowController()
         controller.show(loadHome: false)
@@ -81,7 +135,7 @@ final class BrowserIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 800_000_000)
 
         let snapshot = try await Self.performanceSnapshot(from: controller.webView)
-        XCTAssertEqual((snapshot["activityTotal"] as? NSNumber)?.intValue, 5)
+        XCTAssertEqual((snapshot["activityTotal"] as? NSNumber)?.intValue, 7)
         XCTAssertEqual((snapshot["reasoningCount"] as? NSNumber)?.intValue, 1)
         XCTAssertEqual((snapshot["toolCount"] as? NSNumber)?.intValue, 1)
         let firstKinds = try await Self.evaluate("Array.from(document.querySelectorAll('#chatgpt-stable-activity-list button')).slice(0,2).map(x=>x.innerText)", in: controller.webView) as? [String]
@@ -89,7 +143,7 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertTrue(firstKinds?.contains(where: { $0.hasPrefix("Search") }) == true)
         XCTAssertEqual((snapshot["codeCount"] as? NSNumber)?.intValue, 1)
         XCTAssertEqual((snapshot["tableCount"] as? NSNumber)?.intValue, 1)
-        XCTAssertEqual((snapshot["mediaCount"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual((snapshot["mediaCount"] as? NSNumber)?.intValue, 3)
         let railExists = try await Self.evaluate("!!document.getElementById('chatgpt-stable-activity-rail')", in: controller.webView) as? Bool
         XCTAssertEqual(railExists, true)
         controller.window.close()
@@ -191,6 +245,64 @@ final class BrowserIntegrationTests: XCTestCase {
     }
 
 
+
+
+
+    func testCompletedAgentTurnStaysCompactAndCollapsesOldDisclosuresOnce() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticOpenToolConversation(activityCount: 14), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        var snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["hiddenActivities"] as? NSNumber)?.intValue, 2)
+        XCTAssertEqual(snapshot["activityMode"] as? String, "compact")
+        let states = try await Self.evaluate("Array.from(document.querySelectorAll('details')).map(x=>x.open)", in: controller.webView) as? [Bool]
+        XCTAssertEqual(states?.first, false)
+        XCTAssertEqual(states?.suffix(3).allSatisfy { $0 }, true)
+        _ = try await Self.evaluate("document.querySelectorAll('details')[5].open=true", in: controller.webView)
+        _ = try await Self.evaluate("window.__chatgptStablePerf?.pressure?.(1000)", in: controller.webView)
+        try await Task.sleep(nanoseconds: 250_000_000)
+        let reopened = try await Self.evaluate("document.querySelectorAll('details')[5].open", in: controller.webView) as? Bool
+        XCTAssertEqual(reopened, true)
+        snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["activityTotal"] as? NSNumber)?.intValue, 14)
+        controller.window.close()
+    }
+
+    func testArtifactActivityStaysVisibleDuringCompaction() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 30, artifactIndex: 1), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        let snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["artifactCount"] as? NSNumber)?.intValue, 1)
+        let hidden = try await Self.evaluate("document.querySelector('[data-testid=generated-file-1]').getAttribute('data-chatgpt-stable-activity-hidden')", in: controller.webView) as? String
+        XCTAssertNil(hidden)
+        controller.window.close()
+    }
+
+    func testErrorActivityStaysVisibleDuringCompaction() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 30, errorIndex: 0), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        let snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["errorCount"] as? NSNumber)?.intValue, 1)
+        let errorHidden = try await Self.evaluate("document.querySelector('[data-testid=tool-error-0]').getAttribute('data-chatgpt-stable-activity-hidden')", in: controller.webView) as? String
+        XCTAssertNil(errorHidden)
+        controller.window.close()
+    }
+
+    func testCompletedErrorDisclosureIsNotAutoCollapsed() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticCompletedErrorFixture(), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        let open = try await Self.evaluate("document.querySelector('[data-testid=tool-error-card]').open", in: controller.webView) as? Bool
+        XCTAssertEqual(open, true)
+        controller.window.close()
+    }
+
     func testActivityRailKeepsOnlyLatestFortyRowsUntilExpanded() async throws {
         let controller = BrowserWindowController()
         controller.show(loadHome: false)
@@ -288,6 +400,32 @@ final class BrowserIntegrationTests: XCTestCase {
     }
 
 
+
+
+
+    private static func syntheticOpenToolConversation(activityCount: Int) -> String {
+        let tools = (0..<activityCount).map { index in
+            "<details open data-testid='tool-search-\(index)'><summary>tool</summary><div style='height:20px'>x</div></details>"
+        }.joined()
+        return "<html><body><div id='scroll' style='height:300px;overflow-y:auto'><section data-turn-id='t0' data-testid='conversation-turn-0' style='min-height:1000px'><div data-message-author-role='assistant'>\(tools)</div></section></div><script>addEventListener('load',()=>{const s=document.getElementById('scroll');s.scrollTop=s.scrollHeight;});</script></body></html>"
+    }
+
+    private static func syntheticCompletedErrorFixture() -> String {
+        """
+        <html><body>
+          <section data-turn-id='t0' data-testid='conversation-turn-0'><div data-message-author-role='assistant'><details open data-testid='tool-error-card'><summary>error</summary><div>x</div></details></div></section>
+          <section data-turn-id='t1' data-testid='conversation-turn-1'><div data-message-author-role='assistant'>latest</div></section>
+        </body></html>
+        """
+    }
+
+    private static func syntheticShellOnlyConversation(turns: Int) -> String {
+        let shells = (0..<turns).map { index in
+            "<section data-testid='conversation-turn-\(index)' data-turn='\(index.isMultiple(of: 2) ? "user" : "assistant")' style='height:40px'></section>"
+        }.joined()
+        return "<html><body>\(shells)</body></html>"
+    }
+
     private static func syntheticNoisyConversation(noiseNodes: Int, activityCount: Int) -> String {
         let noise = String(repeating: "<span class='noise'></span>", count: noiseNodes)
         let tools = (0..<activityCount).map { index in
@@ -298,9 +436,13 @@ final class BrowserIntegrationTests: XCTestCase {
         """
     }
 
-    private static func syntheticToolHeavyConversation(activityCount: Int, generating: Bool = false) -> String {
+    private static func syntheticToolHeavyConversation(activityCount: Int, generating: Bool = false, errorIndex: Int? = nil, artifactIndex: Int? = nil) -> String {
         let tools = (0..<activityCount).map { index in
-            "<details data-testid='tool-search-\(index)'><summary>tool</summary><div>x</div></details>"
+            let testID: String
+            if index == errorIndex { testID = "tool-error-\(index)" }
+            else if index == artifactIndex { testID = "generated-file-\(index)" }
+            else { testID = "tool-search-\(index)" }
+            return "<details data-testid='\(testID)'><summary>tool</summary><div>x</div></details>"
         }.joined()
         let stop = generating ? "<button data-testid='stop-button' style='width:20px;height:20px'>stop</button>" : ""
         return """
@@ -331,7 +473,7 @@ final class BrowserIntegrationTests: XCTestCase {
             <div data-message-author-role='assistant'>
               <details data-testid='reasoning-summary'><summary>r</summary><div>x</div></details>
               <div data-testid='tool-search-result'><button>tool</button></div>
-              <pre><code>x</code></pre><table><tr><td>x</td></tr></table><figure><img alt='x' src='data:image/gif;base64,R0lGODlhAQABAAAAACw='></figure>
+              <pre><code>x</code></pre><table><tr><td>x</td></tr></table><figure><img alt='x' src='data:image/gif;base64,R0lGODlhAQABAAAAACw='></figure><canvas width='10' height='10'></canvas><audio></audio>
             </div>
           </section>
         </div></body></html>

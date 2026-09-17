@@ -36,6 +36,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private var lastReasoningCount = 0
     private var lastToolCount = 0
     private var lastDetailCount = 0
+    private var lastErrorCount = 0
+    private var lastArtifactCount = 0
     private var lastCodeCount = 0
     private var lastTableCount = 0
     private var lastMediaCount = 0
@@ -168,7 +170,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             "Generating: \(lastIsGenerating ? "yes" : "no") (\(lastGenerationReason))",
             "Composer focused: \(lastComposerFocused ? "yes" : "no")",
             "Near conversation bottom: \(lastNearBottom ? "yes" : "no")",
-            "Activity: \(lastActivityTotal) (tool \(lastToolCount), reasoning \(lastReasoningCount), detail \(lastDetailCount))",
+            "Activity: \(lastActivityTotal) (tool \(lastToolCount), reasoning \(lastReasoningCount), errors \(lastErrorCount), artifacts \(lastArtifactCount))",
             "Activity mode: \(lastActivityMode), parked \(lastHiddenActivityCount)",
             "Lean scan: \(String(format: "%.1f ms", lastOptimizerScanMs))",
             "Rich content: code \(lastCodeCount), tables \(lastTableCount), media \(lastMediaCount)",
@@ -400,6 +402,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             report.reasoningCount = perf.reasoningCount;
             report.toolCount = perf.toolCount;
             report.detailCount = perf.detailCount;
+            report.errorCount = perf.errorCount;
+            report.artifactCount = perf.artifactCount;
             report.codeCount = perf.codeCount;
             report.tableCount = perf.tableCount;
             report.mediaCount = perf.mediaCount;
@@ -443,6 +447,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             if let count = (report["reasoningCount"] as? NSNumber)?.intValue { self.lastReasoningCount = count }
             if let count = (report["toolCount"] as? NSNumber)?.intValue { self.lastToolCount = count }
             if let count = (report["detailCount"] as? NSNumber)?.intValue { self.lastDetailCount = count }
+            if let count = (report["errorCount"] as? NSNumber)?.intValue { self.lastErrorCount = count }
+            if let count = (report["artifactCount"] as? NSNumber)?.intValue { self.lastArtifactCount = count }
             if let count = (report["codeCount"] as? NSNumber)?.intValue { self.lastCodeCount = count }
             if let count = (report["tableCount"] as? NSNumber)?.intValue { self.lastTableCount = count }
             if let count = (report["mediaCount"] as? NSNumber)?.intValue { self.lastMediaCount = count }
@@ -459,6 +465,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
                         domNodes: self.lastDOMNodeCount,
                         mountedRoles: self.lastMountedRoleCount,
                         heartbeatLatency: latency,
+                        optimizerScanLatency: self.lastOptimizerScanMs / 1000,
                         isGenerating: self.lastIsGenerating,
                         composerFocused: self.lastComposerFocused,
                         nearBottom: self.lastNearBottom

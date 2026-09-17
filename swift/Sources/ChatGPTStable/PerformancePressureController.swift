@@ -14,6 +14,7 @@ struct PerformancePressureSample {
     let domNodes: Int
     let mountedRoles: Int
     let heartbeatLatency: TimeInterval
+    let optimizerScanLatency: TimeInterval
     let isGenerating: Bool
     let composerFocused: Bool
     let nearBottom: Bool
@@ -88,10 +89,10 @@ final class PerformancePressureController {
     }
 
     static func level(for sample: PerformancePressureSample) -> PerformancePressureLevel {
-        if sample.domNodes >= 18_000 || sample.mountedRoles >= 64 || sample.heartbeatLatency >= 0.75 {
+        if sample.domNodes >= 12_000 || sample.mountedRoles >= 48 || sample.heartbeatLatency >= 0.40 || sample.optimizerScanLatency >= 0.25 {
             return .severe
         }
-        if sample.domNodes >= 9_000 || sample.mountedRoles >= 32 || sample.heartbeatLatency >= 0.20 {
+        if sample.domNodes >= 4_500 || sample.mountedRoles >= 24 || sample.heartbeatLatency >= 0.08 || sample.optimizerScanLatency >= 0.08 {
             return .elevated
         }
         return .normal

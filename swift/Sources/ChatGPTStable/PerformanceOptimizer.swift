@@ -42,10 +42,13 @@ enum PerformanceOptimizer {
         scanPending: false,
         scrollRoot: null,
         activityNodes: [],
+        turnShellNodes: [],
         activityTotal: 0,
         reasoningCount: 0,
         toolCount: 0,
         detailCount: 0,
+        errorCount: 0,
+        artifactCount: 0,
         codeCount: 0,
         tableCount: 0,
         mediaCount: 0,
@@ -59,10 +62,12 @@ enum PerformanceOptimizer {
 
       document.documentElement?.setAttribute(leanAttr, '1');
 
+      const assistantSelector = '[data-message-author-role="assistant"],[data-role="assistant"],[data-message-author="assistant"]';
+      const messageRoleSelector = '[data-message-author-role],[data-role],[data-message-author]';
       const isTurn = element => {
         if (!(element instanceof Element)) return false;
         const testID = element.getAttribute('data-testid') || '';
-        return element.hasAttribute('data-turn-id') || testID.startsWith('conversation-turn-');
+        return element.hasAttribute('data-turn-id') || element.hasAttribute('data-turn-id-container') || testID.startsWith('conversation-turn-') || (element.tagName === 'SECTION' && element.hasAttribute('data-turn'));
       };
 
       const isVisibleControl = element => {
@@ -146,7 +151,7 @@ enum PerformanceOptimizer {
             position: fixed; right: 14px; top: 70px; z-index: 2147482998; width: 184px;
             max-height: min(56vh, 560px); overflow: hidden; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
             border-radius: 12px; background: color-mix(in srgb, Canvas 94%, transparent); color: CanvasText;
-            font: 12px/1.25 -apple-system,BlinkMacSystemFont,sans-serif; box-shadow: none;
+            font: 12px/1.25 -apple-system,BlinkMacSystemFont,sans-serif; box-shadow: none; contain: layout style paint;
           }
           #chatgpt-stable-activity-header { width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:8px 10px; font:inherit; font-weight:600; cursor:pointer; }
           #chatgpt-stable-activity-list { max-height: calc(min(56vh, 560px) - 34px); overflow:auto; border-top:1px solid color-mix(in srgb, CanvasText 10%, transparent); }
@@ -189,12 +194,23 @@ enum PerformanceOptimizer {
           state.activityMode = 'all';
         } else {
           const pressure = Math.max(state.domNodes, state.externalPressure);
-          const keep = state.generating && (pressure >= 9_000 || activities.length > 12) ? 6 : (activities.length > 24 ? 12 : activities.length);
+          const keep = state.generating && (pressure >= 5_000 || activities.length > 12) ? 6 : (activities.length > 12 ? 12 : activities.length);
           const cutoff = Math.max(0, activities.length - keep);
           activities.forEach((item, index) => {
-            if (index < cutoff) hideActivity(item.node); else revealActivity(item.node);
+            if (item.kind === 'Error' || item.kind === 'Artifact') revealActivity(item.node);
+            else if (index < cutoff) hideActivity(item.node); else revealActivity(item.node);
           });
           state.activityMode = cutoff > 0 ? (state.generating ? 'streaming' : 'compact') : 'all';
+        }
+        if (!state.generating) {
+          const collapseBefore = Math.max(0, activities.length - 3);
+          activities.forEach((item, index) => {
+            if (index >= collapseBefore || item.kind === 'Error' || item.kind === 'Artifact') return;
+            if (item.node.tagName === 'DETAILS' && !item.node.hasAttribute(autoCollapsedAttr)) {
+              if (item.node.open) item.node.open = false;
+              item.node.setAttribute(autoCollapsedAttr, '1');
+            }
+          });
         }
         state.hiddenActivities = activities.reduce((count, item) => count + (item.node.getAttribute(activityHiddenAttr) === '1' ? 1 : 0), 0);
         if (preserveBottom) {
@@ -208,6 +224,8 @@ enum PerformanceOptimizer {
       const activityKind = element => {
         if (!(element instanceof Element)) return null;
         const testID = (element.getAttribute('data-testid') || '').toLowerCase();
+        if (/(error|failed|failure)/.test(testID)) return 'Error';
+        if (/(artifact|download|attachment|generated-file)/.test(testID)) return 'Artifact';
         if (/(reason|think|thought)/.test(testID)) return 'Reasoning';
         if (/(source|citation|reference)/.test(testID)) return 'Sources';
         if (/search/.test(testID)) return 'Search';
@@ -220,7 +238,8 @@ enum PerformanceOptimizer {
         if (/tool/.test(testID)) return 'Tool';
         if (element.tagName === 'PRE') return 'Code';
         if (element.tagName === 'TABLE') return 'Table';
-        if (element.tagName === 'VIDEO' || element.tagName === 'IFRAME' || element.tagName === 'FIGURE') return 'Media';
+        if (element.tagName === 'CANVAS') return 'Chart';
+        if (element.tagName === 'VIDEO' || element.tagName === 'AUDIO' || element.tagName === 'IFRAME' || element.tagName === 'FIGURE') return 'Media';
         if (element.tagName === 'DETAILS') return 'Detail';
         return null;
       };
@@ -239,6 +258,25 @@ enum PerformanceOptimizer {
           const list = document.getElementById('chatgpt-stable-activity-list');
           if (list) list.hidden = !state.activityExpanded;
         });
+        const thread = document.createElement('div');
+        thread.id = 'chatgpt-stable-thread-nav';
+        thread.style.cssText = 'display:none;padding:7px 10px;border-top:1px solid color-mix(in srgb, CanvasText 10%, transparent)';
+        const threadLabel = document.createElement('div');
+        threadLabel.id = 'chatgpt-stable-thread-label';
+        threadLabel.style.cssText = 'margin-bottom:4px;opacity:.72';
+        const threadRange = document.createElement('input');
+        threadRange.id = 'chatgpt-stable-thread-range';
+        threadRange.type = 'range';
+        threadRange.min = '0';
+        threadRange.step = '1';
+        threadRange.setAttribute('aria-label', 'Conversation turn');
+        threadRange.style.cssText = 'width:100%;margin:0;accent-color:currentColor';
+        threadRange.addEventListener('change', () => {
+          const index = Math.max(0, Math.min(state.turnShellNodes.length - 1, Number.isFinite(threadRange.valueAsNumber) ? threadRange.valueAsNumber : 0));
+          const target = state.turnShellNodes[index];
+          if (target) target.scrollIntoView({block:'center', behavior:'auto'});
+        });
+        thread.append(threadLabel, threadRange);
         const list = document.createElement('div');
         list.id = 'chatgpt-stable-activity-list';
         const reveal = document.createElement('button');
@@ -256,7 +294,7 @@ enum PerformanceOptimizer {
           }
           scheduleScan(100);
         });
-        rail.append(header, list, reveal);
+        rail.append(header, thread, list, reveal);
         document.documentElement.appendChild(rail);
         return rail;
       };
@@ -264,19 +302,30 @@ enum PerformanceOptimizer {
       const updateActivityRail = activities => {
         const rail = ensureActivityRail();
         const header = rail.querySelector('#chatgpt-stable-activity-header');
+        const thread = rail.querySelector('#chatgpt-stable-thread-nav');
+        const threadLabel = rail.querySelector('#chatgpt-stable-thread-label');
+        const threadRange = rail.querySelector('#chatgpt-stable-thread-range');
         const list = rail.querySelector('#chatgpt-stable-activity-list');
         const reveal = rail.querySelector('#chatgpt-stable-activity-reveal');
-        if (!header || !list || !reveal) return;
-        if (!activities.length && !state.generating) { rail.style.display = 'none'; return; }
+        if (!header || !thread || !threadLabel || !threadRange || !list || !reveal) return;
+        const showThread = state.turnShellNodes.length > 12;
+        if (!activities.length && !state.generating && !showThread) { rail.style.display = 'none'; return; }
+        thread.style.display = showThread ? 'block' : 'none';
+        if (showThread) {
+          threadLabel.replaceChildren(document.createTextNode(`Thread · ${state.turnShellNodes.length} turns`));
+          threadRange.max = String(Math.max(0, state.turnShellNodes.length - 1));
+          if (!threadRange.matches(':active')) threadRange.valueAsNumber = Number(threadRange.max);
+        }
         rail.style.display = 'block';
-        const status = state.generating ? 'Running' : 'Activity';
+        const status = state.generating ? 'Running' : (activities.length ? 'Activity' : 'Conversation');
         const extras = [];
+        if (state.errorCount) extras.push(`error ${state.errorCount}`);
         if (state.toolCount) extras.push(`tool ${state.toolCount}`);
         if (state.reasoningCount) extras.push(`reason ${state.reasoningCount}`);
         if (state.hiddenActivities) extras.push(`parked ${state.hiddenActivities}`);
         if (state.activityMode !== 'all') extras.push(state.activityMode);
         const detail = extras.length ? ` · ${extras.join(' · ')}` : '';
-        header.replaceChildren(document.createTextNode(`${status} · ${activities.length}${detail}`));
+        header.replaceChildren(document.createTextNode(`${status}${activities.length ? ` · ${activities.length}` : ''}${detail}`));
         list.hidden = !state.activityExpanded;
         const compactable = activities.length > 12;
         reveal.style.display = state.hiddenActivities || (state.showAllActivities && compactable) ? 'block' : 'none';
@@ -316,9 +365,9 @@ enum PerformanceOptimizer {
         const seen = new Set();
         for (const turn of targets) {
           if (!(turn instanceof Element)) continue;
-          const assistant = turn.querySelector('[data-message-author-role="assistant"]');
+          const assistant = turn.querySelector(assistantSelector);
           if (!assistant) continue;
-          const candidates = turn.querySelectorAll('details,[data-testid],pre,table,video,iframe,figure');
+          const candidates = turn.querySelectorAll('details,[data-testid],pre,table,video,audio,iframe,figure,canvas');
           for (const candidate of candidates) {
             if (candidate.id?.startsWith('chatgpt-stable-')) continue;
             let node = candidate;
@@ -338,9 +387,16 @@ enum PerformanceOptimizer {
         const toolKinds = new Set(['Tool','Search','Browser','Computer','Terminal','Python','Research','Canvas']);
         state.toolCount = activities.filter(item => toolKinds.has(item.kind)).length;
         state.detailCount = activities.filter(item => item.kind === 'Detail').length;
-        state.codeCount = document.querySelectorAll('[data-message-author-role="assistant"] pre').length;
-        state.tableCount = document.querySelectorAll('[data-message-author-role="assistant"] table').length;
-        state.mediaCount = document.querySelectorAll('[data-message-author-role="assistant"] img,[data-message-author-role="assistant"] video,[data-message-author-role="assistant"] iframe').length;
+        state.errorCount = activities.filter(item => item.kind === 'Error').length;
+        state.artifactCount = activities.filter(item => item.kind === 'Artifact').length;
+        state.codeCount = 0;
+        state.tableCount = 0;
+        state.mediaCount = 0;
+        for (const assistant of document.querySelectorAll(assistantSelector)) {
+          state.codeCount += assistant.querySelectorAll('pre').length;
+          state.tableCount += assistant.querySelectorAll('table').length;
+          state.mediaCount += assistant.querySelectorAll('img,video,audio,iframe,canvas').length;
+        }
         virtualizeActivities(activities);
         updateActivityRail(activities);
       };
@@ -422,7 +478,10 @@ enum PerformanceOptimizer {
         const details = turn.querySelectorAll('details');
         for (const item of details) {
           if (item.hasAttribute(autoCollapsedAttr)) continue;
-          if (item.open) item.open = false;
+          const itemTestID = (item.getAttribute('data-testid') || '').toLowerCase();
+          const containsError = /(error|failed|failure)/.test(itemTestID) || !!item.querySelector('[data-testid*="error" i],[data-testid*="failed" i],[data-testid*="failure" i]');
+          const containsArtifact = /(artifact|download|attachment|generated-file)/.test(itemTestID) || !!item.querySelector('[data-testid*="artifact" i],[data-testid*="download" i],[data-testid*="generated-file" i]');
+          if (!containsError && !containsArtifact && item.open) item.open = false;
           item.setAttribute(autoCollapsedAttr, '1');
         }
       };
@@ -447,9 +506,13 @@ enum PerformanceOptimizer {
         markComposer();
         if (location.pathname !== state.path) resetRoute();
 
-        const shells = document.querySelectorAll('[data-turn-id],[data-testid^="conversation-turn-"]');
+        const shells = document.querySelectorAll('[data-turn-id],[data-turn-id-container],[data-testid^="conversation-turn-"],section[data-turn]');
         const shellSet = new Set(shells);
-        const roleNodes = document.querySelectorAll('[data-message-author-role]');
+        const roleCandidates = document.querySelectorAll(messageRoleSelector);
+        const roleNodes = Array.from(roleCandidates).filter(node => {
+          const role = (node.getAttribute('data-message-author-role') || node.getAttribute('data-role') || node.getAttribute('data-message-author') || '').toLowerCase();
+          return role === 'assistant' || role === 'user';
+        });
         const targets = [];
         const targetSet = new Set();
         let generating = false;
@@ -474,6 +537,7 @@ enum PerformanceOptimizer {
         }
 
         state.shells = shellSet.size;
+        state.turnShellNodes = Array.from(shells);
         state.roles = roleNodes.length;
         state.generating = generating;
         state.generationReason = generationReason;
@@ -505,7 +569,9 @@ enum PerformanceOptimizer {
             }
             state.mode = 'streaming';
           } else if (targets.length > 32 && nearBottom && canHide) {
-            const cutoff = Math.max(0, targets.length - state.keep);
+            const pressure = Math.max(state.domNodes, state.externalPressure);
+            const tailKeep = pressure >= 12_000 ? 8 : (pressure >= 5_000 ? 12 : state.keep);
+            const cutoff = Math.max(0, targets.length - tailKeep);
             for (let i = 0; i < targets.length; i++) {
               if (i < cutoff) hide(targets[i]);
               else reveal(targets[i]);
@@ -543,7 +609,7 @@ enum PerformanceOptimizer {
         }, delay);
       };
 
-      const relevantSelector = '[data-turn-id],[data-testid^="conversation-turn-"],[data-message-author-role],[aria-busy="true"],[data-testid*="stop" i],details,pre,table,video,iframe,figure,[data-testid*="reason" i],[data-testid*="think" i],[data-testid*="tool" i],[data-testid*="search" i],[data-testid*="source" i],[data-testid*="citation" i]';
+      const relevantSelector = '[data-turn-id],[data-turn-id-container],[data-testid^="conversation-turn-"],section[data-turn],[data-message-author-role],[data-role],[data-message-author],[aria-busy="true"],[data-testid*="stop" i],details,pre,table,video,audio,iframe,figure,canvas,[data-testid*="reason" i],[data-testid*="think" i],[data-testid*="tool" i],[data-testid*="search" i],[data-testid*="source" i],[data-testid*="citation" i]';
       const relevant = node => {
         if (!(node instanceof Element)) return false;
         if (node.matches(relevantSelector)) return true;
@@ -584,6 +650,8 @@ enum PerformanceOptimizer {
             reasoningCount: state.reasoningCount,
             toolCount: state.toolCount,
             detailCount: state.detailCount,
+            errorCount: state.errorCount,
+            artifactCount: state.artifactCount,
             codeCount: state.codeCount,
             tableCount: state.tableCount,
             mediaCount: state.mediaCount,

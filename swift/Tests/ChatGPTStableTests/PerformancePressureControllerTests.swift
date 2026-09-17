@@ -6,6 +6,7 @@ final class PerformancePressureControllerTests: XCTestCase {
         dom: Int = 2_000,
         roles: Int = 8,
         latency: TimeInterval = 0.01,
+        scanLatency: TimeInterval = 0.005,
         generating: Bool = false,
         focused: Bool = false,
         nearBottom: Bool = true
@@ -14,6 +15,7 @@ final class PerformancePressureControllerTests: XCTestCase {
             domNodes: dom,
             mountedRoles: roles,
             heartbeatLatency: latency,
+            optimizerScanLatency: scanLatency,
             isGenerating: generating,
             composerFocused: focused,
             nearBottom: nearBottom
@@ -22,10 +24,14 @@ final class PerformancePressureControllerTests: XCTestCase {
 
     func testPressureLevels() {
         XCTAssertEqual(PerformancePressureController.level(for: sample()), .normal)
-        XCTAssertEqual(PerformancePressureController.level(for: sample(dom: 9_000)), .elevated)
-        XCTAssertEqual(PerformancePressureController.level(for: sample(dom: 18_000)), .severe)
-        XCTAssertEqual(PerformancePressureController.level(for: sample(roles: 64)), .severe)
-        XCTAssertEqual(PerformancePressureController.level(for: sample(latency: 0.8)), .severe)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(dom: 4_500)), .elevated)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(dom: 12_000)), .severe)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(roles: 24)), .elevated)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(roles: 48)), .severe)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(latency: 0.10)), .elevated)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(latency: 0.50)), .severe)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(scanLatency: 0.10)), .elevated)
+        XCTAssertEqual(PerformancePressureController.level(for: sample(scanLatency: 0.30)), .severe)
     }
 
     func testTwoSevereMeasurementsTriggerRefresh() {

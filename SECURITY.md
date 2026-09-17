@@ -27,7 +27,7 @@
 
 ## Stability boundary
 
-The supervisor may inspect document readiness, body/DOM counts, focus type, element tags and structural attributes such as `data-turn-id`, `data-testid`, `data-message-author-role`, `aria-busy`, and `aria-label` used to identify turn shells, generation controls and visible activity categories. The page script may modify local classes/styles/attributes and disclosure open state, but it must not inspect text, form values, prompts, messages, cookies or Web Storage. Native heartbeat checks run only while the app is active and visible, and back off while generation is active.
+The supervisor may inspect document readiness, body/DOM counts, focus type, element tags and structural attributes such as `data-turn-id`, `data-turn-id-container`, `data-testid`, `data-message-author-role`, `data-role`, `data-message-author`, `aria-busy`, and `aria-label` used to identify turn shells, generation controls and visible activity categories. The page script may modify local classes/styles/attributes and disclosure open state, but it must not inspect text, form values, prompts, messages, cookies or Web Storage. Native heartbeat checks run only while the app is active and visible, and back off while generation is active.
 
 The strongest recovery creates a new `WKWebView` and reuses the existing `WKWebsiteDataStore` object without enumerating its contents. DEBUG-only fault-injection hooks are compiled out of release builds, and the release packager rejects the build if their strings appear in the final binary.
 
