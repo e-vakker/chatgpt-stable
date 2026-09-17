@@ -62,9 +62,13 @@ final class WarmConversationCache {
         return evicted
     }
 
-    func evictInactive(excluding activeView: WKWebView?) -> [WKWebView] {
+    func evictInactive(
+        excluding activeView: WKWebView?,
+        includeProtected: Bool = false
+    ) -> [WKWebView] {
         let keys = entries.compactMap { key, entry -> String? in
-            guard !entry.protected, entry.view !== activeView else { return nil }
+            guard entry.view !== activeView else { return nil }
+            guard includeProtected || !entry.protected else { return nil }
             return key
         }
         return keys.compactMap { key in

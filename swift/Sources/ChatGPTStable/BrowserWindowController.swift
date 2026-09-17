@@ -352,13 +352,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
                 cacheActiveConversationIfNeeded()
                 return "preserve-current"
             }
-            schedulePreviousConversationPrewarm(source, key: sourceKey)
+            if interfaceMode == .lean {
+                schedulePreviousConversationPrewarm(source, key: sourceKey)
+            }
         }
         return "cold-spa"
     }
 
     func prewarmConversation(for path: String) -> String {
-        guard !isPopup, window.isVisible, !lastIsGenerating,
+        guard interfaceMode == .lean,
+              !isPopup, window.isVisible, !lastIsGenerating,
               let targetURL = AppSecurityPolicy.conversationURL(forPath: path),
               let key = AppSecurityPolicy.conversationKey(for: targetURL),
               key != activeConversationKey else { return "ignored" }
@@ -378,6 +381,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     }
 
     private func schedulePreviousConversationPrewarm(_ url: URL, key: String, attempt: Int = 0) {
+        guard interfaceMode == .lean else { return }
         warmPreloadWorkItem?.cancel()
         let sourceView = webView!
         let dataStore = sourceView.configuration.websiteDataStore
@@ -409,6 +413,15 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: item)
     }
 
+    private func prepareCurrentConversationForSwitch() {
+        if interfaceMode == .lean || lastIsGenerating {
+            cacheActiveConversationIfNeeded()
+            return
+        }
+        warmConversationCache.remove(view: webView)
+        activeConversationKey = nil
+    }
+
     private func openConversationFast(_ url: URL) {
         guard let key = AppSecurityPolicy.conversationKey(for: url), !isPopup else {
             load(url)
@@ -417,7 +430,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         let started = Date()
         warmPreloadWorkItem?.cancel()
         warmPreloadWorkItem = nil
-        cacheActiveConversationIfNeeded()
+        prepareCurrentConversationForSwitch()
 
         if let cached = warmConversationCache.view(for: key) {
             switchToConversationView(cached, key: key)
@@ -587,11 +600,15 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private func startMemoryPressureMonitor() {
         guard memoryPressureSource == nil else { return }
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else { return }
             self.warmPreloadWorkItem?.cancel()
             self.warmPreloadWorkItem = nil
-            let evicted = self.warmConversationCache.evictInactive(excluding: self.webView)
+            let critical = source.data.contains(.critical)
+            let evicted = self.warmConversationCache.evictInactive(
+                excluding: self.webView,
+                includeProtected: critical
+            )
             self.disposeEvictedViews(evicted)
             if !evicted.isEmpty {
                 self.logger.notice("Evicted \(evicted.count) warm conversation view(s) under memory pressure")
@@ -617,7 +634,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         guard !isPopup, !isClosed, !webView.isLoading, !heartbeatInFlight else { return }
         if !force, (!window.isVisible || !NSApp.isActive) { return }
 
-        if !force, lastIsGenerating, let lastHeartbeatStartedAt, Date().timeIntervalSince(lastHeartbeatStartedAt) < 15 { return }
+        let generatingHeartbeatInterval: TimeInterval = interfaceMode == .terminal ? 30 : 15
+        if !force, lastIsGenerating, let lastHeartbeatStartedAt,
+           Date().timeIntervalSince(lastHeartbeatStartedAt) < generatingHeartbeatInterval { return }
 
         let snapshot = supervisor.snapshot()
         guard snapshot.isOnline,

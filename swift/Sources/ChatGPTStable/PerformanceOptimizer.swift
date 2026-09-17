@@ -133,7 +133,9 @@ enum PerformanceOptimizer {
         style.id = 'chatgpt-stable-performance-style';
         style.appendChild(document.createTextNode(`
           html[${leanAttr}="1"] { scroll-behavior: auto !important; }
-          html[${leanAttr}="1"] *, html[${leanAttr}="1"] *::before, html[${leanAttr}="1"] *::after {
+          html[${leanAttr}="1"]:not([data-chatgpt-stable-terminal="1"]) *,
+          html[${leanAttr}="1"]:not([data-chatgpt-stable-terminal="1"]) *::before,
+          html[${leanAttr}="1"]:not([data-chatgpt-stable-terminal="1"]) *::after {
             animation-duration: 0.001ms !important;
             animation-delay: 0s !important;
             animation-iteration-count: 1 !important;
@@ -279,6 +281,7 @@ enum PerformanceOptimizer {
           state.activityExpanded = !state.activityExpanded;
           const list = document.getElementById('chatgpt-stable-activity-list');
           if (list) list.hidden = !state.activityExpanded;
+          if (state.activityExpanded) updateActivityRail(state.activityNodes);
         });
         const thread = document.createElement('div');
         thread.id = 'chatgpt-stable-thread-nav';
@@ -322,6 +325,12 @@ enum PerformanceOptimizer {
       };
 
       const updateActivityRail = activities => {
+        const showThread = state.turnShellNodes.length > 12;
+        if (!activities.length && !state.generating && !showThread) {
+          const existing = document.getElementById('chatgpt-stable-activity-rail');
+          if (existing) existing.style.display = 'none';
+          return;
+        }
         const rail = ensureActivityRail();
         const header = rail.querySelector('#chatgpt-stable-activity-header');
         const thread = rail.querySelector('#chatgpt-stable-thread-nav');
@@ -330,8 +339,6 @@ enum PerformanceOptimizer {
         const list = rail.querySelector('#chatgpt-stable-activity-list');
         const reveal = rail.querySelector('#chatgpt-stable-activity-reveal');
         if (!header || !thread || !threadLabel || !threadRange || !list || !reveal) return;
-        const showThread = state.turnShellNodes.length > 12;
-        if (!activities.length && !state.generating && !showThread) { rail.style.display = 'none'; return; }
         thread.style.display = showThread ? 'block' : 'none';
         if (showThread) {
           threadLabel.replaceChildren(document.createTextNode(`Thread · ${state.turnShellNodes.length} turns`));
@@ -353,6 +360,10 @@ enum PerformanceOptimizer {
         reveal.style.display = state.hiddenActivities || (state.showAllActivities && compactable) ? 'block' : 'none';
         const revealLabel = state.showAllActivities ? 'Compact activity' : `Show all activity (${state.hiddenActivities} parked)`;
         reveal.replaceChildren(document.createTextNode(revealLabel));
+        if (!state.activityExpanded) {
+          list.replaceChildren();
+          return;
+        }
         list.replaceChildren();
         const start = Math.max(0, activities.length - state.railKeep);
         if (start > 0) {
@@ -389,7 +400,7 @@ enum PerformanceOptimizer {
           if (!(turn instanceof Element)) continue;
           const assistant = turn.querySelector(assistantSelector);
           if (!assistant) continue;
-          const candidates = turn.querySelectorAll('details,[data-testid],pre,table,video,audio,iframe,figure,canvas');
+          const candidates = turn.querySelectorAll('details,[data-testid*="error" i],[data-testid*="failed" i],[data-testid*="failure" i],[data-testid*="artifact" i],[data-testid*="download" i],[data-testid*="attachment" i],[data-testid*="generated-file" i],[data-testid*="reason" i],[data-testid*="think" i],[data-testid*="thought" i],[data-testid*="source" i],[data-testid*="citation" i],[data-testid*="reference" i],[data-testid*="search" i],[data-testid*="browser" i],[data-testid*="computer" i],[data-testid*="terminal" i],[data-testid*="shell" i],[data-testid*="python" i],[data-testid*="research" i],[data-testid*="canvas" i],[data-testid*="tool" i],pre,table,video,audio,iframe,figure,canvas');
           for (const candidate of candidates) {
             if (candidate.id?.startsWith('chatgpt-stable-')) continue;
             let node = candidate;
@@ -414,10 +425,12 @@ enum PerformanceOptimizer {
         state.codeCount = 0;
         state.tableCount = 0;
         state.mediaCount = 0;
-        for (const assistant of document.querySelectorAll(assistantSelector)) {
-          state.codeCount += assistant.querySelectorAll('pre').length;
-          state.tableCount += assistant.querySelectorAll('table').length;
-          state.mediaCount += assistant.querySelectorAll('img,video,audio,iframe,canvas').length;
+        if (!terminalMode || state.activityExpanded) {
+          for (const assistant of document.querySelectorAll(assistantSelector)) {
+            state.codeCount += assistant.querySelectorAll('pre').length;
+            state.tableCount += assistant.querySelectorAll('table').length;
+            state.mediaCount += assistant.querySelectorAll('img,video,audio,iframe,canvas').length;
+          }
         }
         virtualizeActivities(activities);
         updateActivityRail(activities);
@@ -436,8 +449,12 @@ enum PerformanceOptimizer {
       };
 
       const updateControl = () => {
+        if (!state.hidden) {
+          const existing = document.getElementById('chatgpt-stable-history-control');
+          if (existing) existing.style.display = 'none';
+          return;
+        }
         const button = ensureControl();
-        if (!state.hidden) { button.style.display = 'none'; return; }
         button.replaceChildren(document.createTextNode(`Show earlier messages (${state.hidden})`));
         button.style.display = 'block';
       };

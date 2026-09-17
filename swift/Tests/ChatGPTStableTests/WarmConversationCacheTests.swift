@@ -21,4 +21,19 @@ final class WarmConversationCacheTests: XCTestCase {
         XCTAssertTrue(cache.contains(a))
         XCTAssertTrue(cache.contains(c))
     }
+
+    func testCriticalEvictionCanDropProtectedInactiveView() {
+        let cache = WarmConversationCache(maxEntries: 2)
+        let active = WKWebView()
+        let protected = WKWebView()
+
+        cache.store(active, for: "/c/active", protected: false)
+        cache.store(protected, for: "/c/protected", protected: true)
+
+        XCTAssertTrue(cache.evictInactive(excluding: active).isEmpty)
+        let evicted = cache.evictInactive(excluding: active, includeProtected: true)
+        XCTAssertEqual(evicted.count, 1)
+        XCTAssertTrue(evicted.first === protected)
+        XCTAssertEqual(cache.stats().count, 1)
+    }
 }

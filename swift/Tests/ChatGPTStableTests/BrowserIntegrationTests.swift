@@ -35,6 +35,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testWarmConversationReopenReusesLiveWebView() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         let urlA = URL(string: "https://chatgpt.com/c/cache-a")!
         let urlB = URL(string: "https://chatgpt.com/c/cache-b")!
@@ -128,11 +129,53 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testIdleHomeCanPrewarmMostRecentConversationDeterministically() {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
+        let initialCount = controller.testWarmCacheStats().count
         XCTAssertEqual(controller.testPrewarmConversation(for: "/c/prewarm-recent"), "scheduled")
-        XCTAssertEqual(controller.testWarmCacheStats().count, 1)
+        XCTAssertEqual(controller.testWarmCacheStats().count, initialCount + 1)
         XCTAssertEqual(controller.testPrewarmConversation(for: "/c/prewarm-recent"), "warm")
+        XCTAssertEqual(controller.testWarmCacheStats().count, initialCount + 1)
+        controller.window.close()
+    }
+
+    func testTerminalModeDropsIdlePreviousConversationOnSwitch() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        let urlA = URL(string: "https://chatgpt.com/c/terminal-a")!
+        let urlB = URL(string: "https://chatgpt.com/c/terminal-b")!
+        controller.webView.loadHTMLString("<html><body><section data-turn-id='a'><div data-message-author-role='assistant'>a</div></section></body></html>", baseURL: urlA)
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let viewA = controller.webView!
+        controller.testCacheCurrentConversation(as: urlA)
+        let viewB = try XCTUnwrap(controller.testSeedWarmConversation(urlB, html: "<html><body><section data-turn-id='b'><div data-message-author-role='assistant'>b</div></section></body></html>"))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(controller.testWarmCacheStats().count, 2)
+
+        controller.testOpenConversation(urlB)
+        XCTAssertTrue(controller.webView === viewB)
+        XCTAssertFalse(controller.webView === viewA)
         XCTAssertEqual(controller.testWarmCacheStats().count, 1)
+        controller.window.close()
+    }
+
+    func testTerminalSimpleConversationAllocatesNoIdleOverlayControls() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticConversation(turns: 4), baseURL: URL(string: "https://chatgpt.com/c/simple")!)
+        try await Task.sleep(nanoseconds: 700_000_000)
+        let values = try await Self.evaluate("(() => ({rail:!!document.getElementById('chatgpt-stable-activity-rail'), history:!!document.getElementById('chatgpt-stable-history-control')}))()", in: controller.webView) as? [String: Any]
+        XCTAssertEqual(values?["rail"] as? Bool, false)
+        XCTAssertEqual(values?["history"] as? Bool, false)
+        controller.window.close()
+    }
+
+    func testTerminalModeDoesNotPrewarmIdleConversation() {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        XCTAssertEqual(controller.currentInterfaceMode(), .terminal)
+        XCTAssertEqual(controller.testPrewarmConversation(for: "/c/prewarm-recent"), "ignored")
+        XCTAssertEqual(controller.testWarmCacheStats().count, 0)
         controller.window.close()
     }
 
@@ -411,6 +454,21 @@ final class BrowserIntegrationTests: XCTestCase {
         snapshot = try await Self.performanceSnapshot(from: controller.webView)
         XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 6)
         XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 24)
+        controller.window.close()
+    }
+
+    func testTerminalCollapsedActivityRailDoesNotBuildRowsUntilOpened() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 30), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+
+        var rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
+        XCTAssertEqual(rows?.intValue, 0)
+        _ = try await Self.evaluate("document.getElementById('chatgpt-stable-activity-header').click()", in: controller.webView)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
+        XCTAssertGreaterThan(rows?.intValue ?? 0, 0)
         controller.window.close()
     }
 
