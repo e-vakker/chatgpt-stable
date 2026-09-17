@@ -8,6 +8,12 @@ The application uses a persistent `WKWebsiteDataStore` so ChatGPT can keep its o
 
 External top-level links open in the system browser. Known ChatGPT/OpenAI authentication hosts and major OAuth providers are allowed in the WebView so login can work. The native shell provides only navigation, WebKit crash/blank-page recovery, and WebKit-managed downloads.
 
+## Stability supervisor
+
+The native shell supervises WebKit without reading ChatGPT content. It uses a lightweight render heartbeat, Apple WebKit renderer-termination callbacks, `NWPathMonitor`, a navigation watchdog, and a rolling circuit breaker. Recovery escalates from reload, to cache-bypassing reload, to complete `WKWebView` replacement while preserving the opaque persistent `WKWebsiteDataStore`.
+
+A single missed heartbeat never reloads the page. Two consecutive misses are required, background windows are not probed, and repeated failures stop automatic recovery instead of creating a reload loop. The Health Diagnostics panel exposes only state, network availability, current host, heartbeat latency and recovery counters.
+
 ## Security properties
 
 - App Sandbox enabled.

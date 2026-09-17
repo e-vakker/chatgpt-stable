@@ -21,6 +21,15 @@ enum AppSecurityPolicy {
         "login.microsoftonline.com",
     ]
 
+    private static let authenticationHosts: Set<String> = [
+        "auth.openai.com",
+        "auth0.openai.com",
+        "login.openai.com",
+        "accounts.google.com",
+        "appleid.apple.com",
+        "login.microsoftonline.com",
+    ]
+
     static func isTrustedMainFrameURL(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "https",
               url.user == nil,
@@ -29,8 +38,7 @@ enum AppSecurityPolicy {
               let host = url.host?.lowercased() else {
             return false
         }
-        return trustedHosts.contains(host)
-            || trustedHosts.contains(where: { host.hasSuffix("." + $0) })
+        return matches(host, against: trustedHosts)
     }
 
     static func isSafeSubframeURL(_ url: URL, sourceURL: URL?) -> Bool {
@@ -51,10 +59,23 @@ enum AppSecurityPolicy {
               url.user == nil,
               url.password == nil,
               url.port == nil || url.port == 443,
+              let host = url.host?.lowercased(),
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
         components.fragment = nil
+        if matches(host, against: authenticationHosts) {
+            components.query = nil
+        }
         return components.url
+    }
+
+    static func isMediaCaptureHost(_ host: String) -> Bool {
+        host == "chatgpt.com" || host.hasSuffix(".chatgpt.com")
+            || host == "chat.openai.com" || host.hasSuffix(".chat.openai.com")
+    }
+
+    private static func matches(_ host: String, against set: Set<String>) -> Bool {
+        set.contains(host) || set.contains(where: { host.hasSuffix("." + $0) })
     }
 }

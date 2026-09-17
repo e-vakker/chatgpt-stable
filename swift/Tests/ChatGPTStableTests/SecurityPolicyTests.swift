@@ -15,8 +15,13 @@ final class SecurityPolicyTests: XCTestCase {
         XCTAssertFalse(AppSecurityPolicy.isTrustedMainFrameURL(URL(string: "file:///etc/passwd")!))
     }
 
-    func testExternalURLsRequireHTTPSAndNoEmbeddedCredentials() {
-        XCTAssertNotNil(AppSecurityPolicy.safeExternalURL(URL(string: "https://example.com/article#fragment")!))
+    func testExternalURLsRequireHTTPSAndStripAuthSecrets() {
+        let ordinary = AppSecurityPolicy.safeExternalURL(URL(string: "https://example.com/article?q=1#fragment")!)
+        XCTAssertEqual(ordinary?.query, "q=1")
+        XCTAssertNil(ordinary?.fragment)
+        let auth = AppSecurityPolicy.safeExternalURL(URL(string: "https://auth.openai.com/callback?code=secret#token")!)
+        XCTAssertNil(auth?.query)
+        XCTAssertNil(auth?.fragment)
         XCTAssertNil(AppSecurityPolicy.safeExternalURL(URL(string: "http://example.com/")!))
         XCTAssertNil(AppSecurityPolicy.safeExternalURL(URL(string: "https://user:pass@example.com/")!))
     }
@@ -27,5 +32,12 @@ final class SecurityPolicyTests: XCTestCase {
         XCTAssertTrue(AppSecurityPolicy.isSafeSubframeURL(URL(string: "about:blank")!, sourceURL: source))
         XCTAssertFalse(AppSecurityPolicy.isSafeSubframeURL(URL(string: "javascript:alert(1)")!, sourceURL: source))
         XCTAssertFalse(AppSecurityPolicy.isSafeSubframeURL(URL(string: "file:///tmp/x")!, sourceURL: source))
+    }
+
+    func testMediaCaptureIsLimitedToChatSurfaces() {
+        XCTAssertTrue(AppSecurityPolicy.isMediaCaptureHost("chatgpt.com"))
+        XCTAssertTrue(AppSecurityPolicy.isMediaCaptureHost("chat.openai.com"))
+        XCTAssertFalse(AppSecurityPolicy.isMediaCaptureHost("auth.openai.com"))
+        XCTAssertFalse(AppSecurityPolicy.isMediaCaptureHost("accounts.google.com"))
     }
 }

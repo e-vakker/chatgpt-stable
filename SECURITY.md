@@ -22,6 +22,12 @@
 - link non-system libraries;
 - carry `disable-library-validation`, `get-task-allow`, or DYLD-environment entitlements.
 
+## Stability boundary
+
+The supervisor may inspect only document readiness, whether a body exists, the number of direct body children, and whether the main URL is a Cloudflare challenge path. It must not inspect text, forms, prompts, messages, cookies or Web Storage. Heartbeat checks run only while the app is active and visible.
+
+The strongest recovery creates a new `WKWebView` and reuses the existing `WKWebsiteDataStore` object without enumerating its contents. DEBUG-only fault-injection hooks are compiled out of release builds, and the release packager rejects the build if their strings appear in the final binary.
+
 ## Build gates
 
 `swift/packaging/security-audit.sh` rejects high-risk APIs, unexpected hard-coded HTTPS destinations, CJK UI/source text, third-party Swift dependencies, and additional JavaScript evaluation sites.

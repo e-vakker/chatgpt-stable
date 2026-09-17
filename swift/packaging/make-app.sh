@@ -62,6 +62,11 @@ if strings "$MACOS/$BINARY_NAME" | grep -Ei 'session-token|httpCookieStore|HTTPC
   exit 1
 fi
 
+if strings "$MACOS/$BINARY_NAME" | grep -E 'testLoadBlankDocument|testRunHeartbeat|integration test|<html><body></body></html>' >/dev/null; then
+  echo 'error: DEBUG-only fault harness leaked into release binary' >&2
+  exit 1
+fi
+
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 unzip -tq "$ZIP" >/dev/null
