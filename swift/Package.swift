@@ -1,44 +1,23 @@
 // swift-tools-version: 5.9
-
 import PackageDescription
 
 let package = Package(
-    name: "ChatGPTSwiftWeb",
-    platforms: [
-        .macOS(.v12),
-    ],
+    name: "ChatGPTStable",
+    platforms: [.macOS(.v14)],
     products: [
-        .library(name: "ChatGPTSwiftWebCore", targets: ["ChatGPTSwiftWebCore"]),
-        .executable(name: "ChatGPTSwiftWeb", targets: ["ChatGPTSwiftWeb"]),
-    ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
+        .executable(name: "ChatGPTStable", targets: ["ChatGPTStable"]),
     ],
     targets: [
-        .target(
-            name: "ChatGPTSwiftWebCore"
-        ),
         .executableTarget(
-            name: "ChatGPTSwiftWeb",
-            dependencies: [
-                "ChatGPTSwiftWebCore",
-                .product(name: "Sparkle", package: "Sparkle"),
-            ],
+            name: "ChatGPTStable",
             linkerSettings: [
                 .linkedFramework("AppKit"),
-                .linkedFramework("AVFoundation"),
                 .linkedFramework("WebKit"),
-                .linkedFramework("UniformTypeIdentifiers"),
-                .linkedFramework("UserNotifications"),
             ]
         ),
         .testTarget(
-            name: "ChatGPTSwiftWebCoreTests",
-            dependencies: ["ChatGPTSwiftWebCore"]
-        ),
-        .testTarget(
-            name: "ChatGPTSwiftWebIntegrationTests",
-            dependencies: ["ChatGPTSwiftWeb"]
+            name: "ChatGPTStableTests",
+            dependencies: ["ChatGPTStable"]
         ),
     ]
 )
