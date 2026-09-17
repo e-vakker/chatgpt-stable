@@ -3,7 +3,7 @@ import WebKit
 enum PerformanceOptimizer {
     static func install(into controller: WKUserContentController) {
         controller.addUserScript(
-            WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+            WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
     }
 
@@ -16,7 +16,15 @@ enum PerformanceOptimizer {
 
       const hiddenAttr = 'data-chatgpt-stable-hidden';
       const completeAttr = 'data-chatgpt-stable-complete';
+      const leanAttr = 'data-chatgpt-stable-lean';
+      const activityAttr = 'data-chatgpt-stable-activity';
+      const activityHiddenAttr = 'data-chatgpt-stable-activity-hidden';
+      const composerAttr = 'data-chatgpt-stable-composer';
+      const autoCollapsedAttr = 'data-chatgpt-stable-autocollapsed';
+      const bloatHiddenAttr = 'data-chatgpt-stable-bloat-hidden';
       const originalDisplay = new WeakMap();
+      const originalActivityDisplay = new WeakMap();
+      let pinnedActivities = new WeakSet();
       const state = {
         path: location.pathname,
         keep: 20,
@@ -31,8 +39,24 @@ enum PerformanceOptimizer {
         externalPressure: 0,
         nearBottom: true,
         scanTimer: 0,
-        scrollRoot: null
+        scanPending: false,
+        scrollRoot: null,
+        activityNodes: [],
+        activityTotal: 0,
+        reasoningCount: 0,
+        toolCount: 0,
+        detailCount: 0,
+        codeCount: 0,
+        tableCount: 0,
+        mediaCount: 0,
+        scanMs: 0,
+        hiddenActivities: 0,
+        activityMode: 'all',
+        activityExpanded: true,
+        showAllActivities: false
       };
+
+      document.documentElement?.setAttribute(leanAttr, '1');
 
       const isTurn = element => {
         if (!(element instanceof Element)) return false;
@@ -82,15 +106,219 @@ enum PerformanceOptimizer {
         const style = document.createElement('style');
         style.id = 'chatgpt-stable-performance-style';
         style.appendChild(document.createTextNode(`
-          html { scroll-behavior: auto !important; }
-          [${completeAttr}="1"] *, [${hiddenAttr}="1"] * {
+          html[${leanAttr}="1"] { scroll-behavior: auto !important; }
+          html[${leanAttr}="1"] *, html[${leanAttr}="1"] *::before, html[${leanAttr}="1"] *::after {
             animation-duration: 0.001ms !important;
             animation-delay: 0s !important;
+            animation-iteration-count: 1 !important;
             transition-duration: 0.001ms !important;
             transition-delay: 0s !important;
+            scroll-behavior: auto !important;
           }
+          html[${leanAttr}="1"] [class*="backdrop-blur"],
+          html[${leanAttr}="1"] [class*="blur-"],
+          html[${leanAttr}="1"] [class*="drop-shadow"] {
+            -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+            filter: none !important;
+          }
+          html[${leanAttr}="1"] [class*="shadow-"] { box-shadow: none !important; }
+          [${completeAttr}="1"] *, [${hiddenAttr}="1"] * {
+            animation: none !important;
+            transition: none !important;
+          }
+          [${completeAttr}="1"] { contain: style; }
+          [${composerAttr}="1"], nav[aria-label="Chat history"], [data-testid^="history-item-"] { contain: style; }
+          [${completeAttr}="1"] details { margin-block: .3rem !important; }
+          [${activityAttr}="1"] > summary { padding-block: .25rem !important; min-height: 0 !important; }
+          [${completeAttr}="1"] [data-testid$="-turn-action-button"] { opacity: .08 !important; }
+          [${completeAttr}="1"]:hover [data-testid$="-turn-action-button"],
+          [${completeAttr}="1"] [data-testid$="-turn-action-button"]:focus-visible { opacity: 1 !important; }
+          li[data-testid^="history-item-"] { min-height: 28px !important; margin-block: 0 !important; }
+          [data-testid^="history-item-"][data-testid$="-options"] { opacity: .08 !important; }
+          li[data-testid^="history-item-"]:hover [data-testid$="-options"],
+          [data-testid^="history-item-"][data-testid$="-options"]:focus-visible { opacity: 1 !important; }
+          [${completeAttr}="1"] details > summary { padding-block: .2rem !important; min-height: 0 !important; }
+          [${completeAttr}="1"] pre, [${completeAttr}="1"] table { margin-block: .5rem !important; }
+          [${completeAttr}="1"] pre { max-height: min(52vh, 480px) !important; overflow:auto !important; }
+          #chatgpt-stable-activity-rail {
+            position: fixed; right: 14px; top: 70px; z-index: 2147482998; width: 184px;
+            max-height: min(56vh, 560px); overflow: hidden; border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+            border-radius: 12px; background: color-mix(in srgb, Canvas 94%, transparent); color: CanvasText;
+            font: 12px/1.25 -apple-system,BlinkMacSystemFont,sans-serif; box-shadow: none;
+          }
+          #chatgpt-stable-activity-header { width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:8px 10px; font:inherit; font-weight:600; cursor:pointer; }
+          #chatgpt-stable-activity-list { max-height: calc(min(56vh, 560px) - 34px); overflow:auto; border-top:1px solid color-mix(in srgb, CanvasText 10%, transparent); }
+          #chatgpt-stable-activity-list[hidden] { display:none !important; }
+          #chatgpt-stable-activity-list button { display:block; width:100%; border:0; background:transparent; color:inherit; text-align:left; padding:6px 10px; font:inherit; cursor:pointer; }
+          #chatgpt-stable-activity-list button:hover { background:color-mix(in srgb, CanvasText 7%, transparent); }
+          [${activityAttr}="1"] { scroll-margin-block: 120px; margin-block: .25rem !important; box-shadow: none !important; }
+          [${activityHiddenAttr}="1"], [${bloatHiddenAttr}="1"] { display:none !important; }
+          @media (max-width: 1100px) { #chatgpt-stable-activity-rail { display:none !important; } }
         `));
         (document.head || document.documentElement).appendChild(style);
+      };
+
+      const revealActivity = node => {
+        if (!(node instanceof Element)) return;
+        if (node.getAttribute(activityHiddenAttr) === '1') {
+          const saved = originalActivityDisplay.get(node);
+          if (saved) node.style.setProperty('display', saved.cssValue, saved.priority);
+          else node.style.removeProperty('display');
+          node.removeAttribute(activityHiddenAttr);
+        }
+      };
+
+      const hideActivity = node => {
+        if (!(node instanceof Element) || pinnedActivities.has(node) || node.getAttribute(activityHiddenAttr) === '1') return;
+        originalActivityDisplay.set(node, {cssValue: node.style.getPropertyValue('display'), priority: node.style.getPropertyPriority('display')});
+        node.setAttribute(activityHiddenAttr, '1');
+        node.style.setProperty('display', 'none', 'important');
+      };
+
+      const virtualizeActivities = activities => {
+        if (state.showAllActivities) {
+          activities.forEach(item => { pinnedActivities.add(item.node); revealActivity(item.node); });
+          state.activityMode = 'all';
+        } else if (!state.nearBottom) {
+          activities.forEach(item => revealActivity(item.node));
+          state.activityMode = 'all';
+        } else {
+          const pressure = Math.max(state.domNodes, state.externalPressure);
+          const keep = state.generating && (pressure >= 9_000 || activities.length > 12) ? 6 : (activities.length > 24 ? 12 : activities.length);
+          const cutoff = Math.max(0, activities.length - keep);
+          activities.forEach((item, index) => {
+            if (index < cutoff) hideActivity(item.node); else revealActivity(item.node);
+          });
+          state.activityMode = cutoff > 0 ? (state.generating ? 'streaming' : 'compact') : 'all';
+        }
+        state.hiddenActivities = activities.reduce((count, item) => count + (item.node.getAttribute(activityHiddenAttr) === '1' ? 1 : 0), 0);
+      };
+
+      const activityKind = element => {
+        if (!(element instanceof Element)) return null;
+        const testID = (element.getAttribute('data-testid') || '').toLowerCase();
+        if (/(reason|think|thought)/.test(testID)) return 'Reasoning';
+        if (/(source|citation|reference)/.test(testID)) return 'Sources';
+        if (/search/.test(testID)) return 'Search';
+        if (/browser/.test(testID)) return 'Browser';
+        if (/computer/.test(testID)) return 'Computer';
+        if (/terminal|shell/.test(testID)) return 'Terminal';
+        if (/python/.test(testID)) return 'Python';
+        if (/research/.test(testID)) return 'Research';
+        if (/canvas/.test(testID)) return 'Canvas';
+        if (/tool/.test(testID)) return 'Tool';
+        if (element.tagName === 'PRE') return 'Code';
+        if (element.tagName === 'TABLE') return 'Table';
+        if (element.tagName === 'VIDEO' || element.tagName === 'IFRAME' || element.tagName === 'FIGURE') return 'Media';
+        if (element.tagName === 'DETAILS') return 'Detail';
+        return null;
+      };
+
+      const ensureActivityRail = () => {
+        let rail = document.getElementById('chatgpt-stable-activity-rail');
+        if (rail) return rail;
+        rail = document.createElement('section');
+        rail.id = 'chatgpt-stable-activity-rail';
+        rail.classList.add('rr-block');
+        const header = document.createElement('button');
+        header.id = 'chatgpt-stable-activity-header';
+        header.type = 'button';
+        header.addEventListener('click', () => {
+          state.activityExpanded = !state.activityExpanded;
+          const list = document.getElementById('chatgpt-stable-activity-list');
+          if (list) list.hidden = !state.activityExpanded;
+        });
+        const list = document.createElement('div');
+        list.id = 'chatgpt-stable-activity-list';
+        const reveal = document.createElement('button');
+        reveal.id = 'chatgpt-stable-activity-reveal';
+        reveal.type = 'button';
+        reveal.style.cssText = 'width:100%;border:0;border-top:1px solid color-mix(in srgb, CanvasText 10%, transparent);background:transparent;color:inherit;text-align:left;padding:7px 10px;font:inherit;cursor:pointer;display:none';
+        reveal.addEventListener('click', () => {
+          state.showAllActivities = !state.showAllActivities;
+          if (state.showAllActivities) {
+            for (const item of state.activityNodes) { pinnedActivities.add(item.node); revealActivity(item.node); }
+            state.hiddenActivities = 0;
+            state.activityMode = 'all';
+          } else {
+            pinnedActivities = new WeakSet();
+          }
+          scheduleScan(100);
+        });
+        rail.append(header, list, reveal);
+        document.documentElement.appendChild(rail);
+        return rail;
+      };
+
+      const updateActivityRail = activities => {
+        const rail = ensureActivityRail();
+        const header = rail.querySelector('#chatgpt-stable-activity-header');
+        const list = rail.querySelector('#chatgpt-stable-activity-list');
+        const reveal = rail.querySelector('#chatgpt-stable-activity-reveal');
+        if (!header || !list || !reveal) return;
+        if (!activities.length && !state.generating) { rail.style.display = 'none'; return; }
+        rail.style.display = 'block';
+        const status = state.generating ? 'Running' : 'Activity';
+        const extras = [];
+        if (state.toolCount) extras.push(`tool ${state.toolCount}`);
+        if (state.reasoningCount) extras.push(`reason ${state.reasoningCount}`);
+        const detail = extras.length ? ` · ${extras.join(' · ')}` : '';
+        header.replaceChildren(document.createTextNode(`${status} · ${activities.length}${detail}`));
+        list.hidden = !state.activityExpanded;
+        const compactable = activities.length > 12;
+        reveal.style.display = state.hiddenActivities || (state.showAllActivities && compactable) ? 'block' : 'none';
+        const revealLabel = state.showAllActivities ? 'Compact activity' : `Show all activity (${state.hiddenActivities} parked)`;
+        reveal.replaceChildren(document.createTextNode(revealLabel));
+        list.replaceChildren();
+        activities.forEach((item, index) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          const suffix = index === activities.length - 1 && state.generating ? ' · active' : '';
+          button.replaceChildren(document.createTextNode(`${item.kind} ${index + 1}${suffix}`));
+          if (item.node.getAttribute(activityHiddenAttr) === '1') button.appendChild(document.createTextNode(' · parked'));
+          button.addEventListener('click', () => {
+            pinnedActivities.add(item.node);
+            revealActivity(item.node);
+            item.node.scrollIntoView({block:'center', behavior:'auto'});
+            scheduleScan(100);
+          });
+          list.appendChild(button);
+        });
+      };
+
+      const collectActivities = targets => {
+        const activities = [];
+        const seen = new Set();
+        for (const turn of targets) {
+          if (!(turn instanceof Element)) continue;
+          const assistant = turn.querySelector('[data-message-author-role="assistant"]');
+          if (!assistant) continue;
+          const candidates = turn.querySelectorAll('details,[data-testid],pre,table,video,iframe,figure');
+          for (const candidate of candidates) {
+            if (candidate.id?.startsWith('chatgpt-stable-')) continue;
+            let node = candidate;
+            const details = candidate.closest('details');
+            if (details && turn.contains(details)) node = details;
+            if (seen.has(node)) continue;
+            const kind = activityKind(candidate) || activityKind(node);
+            if (!kind) continue;
+            seen.add(node);
+            node.setAttribute(activityAttr, '1');
+            activities.push({node, kind});
+          }
+        }
+        state.activityNodes = activities;
+        state.activityTotal = activities.length;
+        state.reasoningCount = activities.filter(item => item.kind === 'Reasoning').length;
+        const toolKinds = new Set(['Tool','Search','Browser','Computer','Terminal','Python','Research','Canvas']);
+        state.toolCount = activities.filter(item => toolKinds.has(item.kind)).length;
+        state.detailCount = activities.filter(item => item.kind === 'Detail').length;
+        state.codeCount = document.querySelectorAll('[data-message-author-role="assistant"] pre').length;
+        state.tableCount = document.querySelectorAll('[data-message-author-role="assistant"] table').length;
+        state.mediaCount = document.querySelectorAll('[data-message-author-role="assistant"] img,[data-message-author-role="assistant"] video,[data-message-author-role="assistant"] iframe').length;
+        virtualizeActivities(activities);
+        updateActivityRail(activities);
       };
 
       const ensureControl = () => {
@@ -113,11 +341,7 @@ enum PerformanceOptimizer {
       };
 
       const revealBatch = count => {
-        const all = document.getElementsByTagName('*');
-        const hidden = [];
-        for (let i = 0; i < all.length; i++) {
-          if (all[i].getAttribute(hiddenAttr) === '1') hidden.push(all[i]);
-        }
+        const hidden = Array.from(document.querySelectorAll(`[${hiddenAttr}="1"]`));
         if (!hidden.length) return;
         const root = state.scrollRoot || document.scrollingElement || document.documentElement;
         const before = root.scrollHeight;
@@ -147,46 +371,77 @@ enum PerformanceOptimizer {
         }, 120);
       };
 
+      const hideNonEssentialChrome = () => {
+        const candidates = document.querySelectorAll('[data-testid*="upsell" i],[data-testid*="upgrade" i],[data-testid*="promo" i]');
+        for (const element of candidates) {
+          if (element.closest('[data-message-author-role]')) continue;
+          element.setAttribute(bloatHiddenAttr, '1');
+        }
+      };
+
+      const markComposer = () => {
+        const input = document.querySelector('[data-testid="prompt-textarea"],#prompt-textarea,[contenteditable="true"][data-lexical-editor="true"]');
+        const form = input?.closest('form');
+        if (form) {
+          form.setAttribute(composerAttr, '1');
+          form.classList.add('rr-block');
+        }
+      };
+
+      const optimizeCompletedTurn = turn => {
+        if (!(turn instanceof Element)) return;
+        const media = turn.querySelectorAll('img,iframe');
+        for (const element of media) {
+          if (!element.hasAttribute('loading')) element.setAttribute('loading', 'lazy');
+          if (element.tagName === 'IMG' && !element.hasAttribute('decoding')) element.setAttribute('decoding', 'async');
+        }
+        const details = turn.querySelectorAll('details');
+        for (const item of details) {
+          if (item.hasAttribute(autoCollapsedAttr)) continue;
+          if (item.open) item.open = false;
+          item.setAttribute(autoCollapsedAttr, '1');
+        }
+      };
+
       const resetRoute = () => {
-        const all = document.getElementsByTagName('*');
-        for (let i = 0; i < all.length; i++) if (all[i].getAttribute(hiddenAttr) === '1') reveal(all[i]);
+        for (const element of document.querySelectorAll(`[${hiddenAttr}="1"]`)) reveal(element);
+        for (const element of document.querySelectorAll(`[${activityHiddenAttr}="1"]`)) revealActivity(element);
         state.path = location.pathname;
         state.keep = 20;
         state.hidden = 0;
         state.mode = 'native';
+        state.showAllActivities = false;
       };
 
       const scan = () => {
+        const scanStarted = performance.now();
         state.scanTimer = 0;
         if (!document.body) return;
         ensureStyle();
+        hideNonEssentialChrome();
+        markComposer();
         if (location.pathname !== state.path) resetRoute();
 
-        const all = document.getElementsByTagName('*');
-        state.domNodes = all.length;
-        const shellSet = new Set();
+        const shells = document.querySelectorAll('[data-turn-id],[data-testid^="conversation-turn-"]');
+        const shellSet = new Set(shells);
+        const roleNodes = document.querySelectorAll('[data-message-author-role]');
         const targets = [];
         const targetSet = new Set();
-        let roles = 0;
         let generating = false;
         let generationReason = 'none';
 
-        for (let i = 0; i < all.length; i++) {
-          const element = all[i];
-          const testID = element.getAttribute('data-testid') || '';
-          const ariaLabel = element.getAttribute('aria-label') || '';
-          if (isTurn(element)) shellSet.add(element);
-          if (!generating) {
-            const ariaBusy = element.getAttribute('aria-busy') === 'true';
-            const stopControl = testID.toLowerCase().includes('stop') || ariaLabel.toLowerCase().includes('stop');
-            if ((ariaBusy || stopControl) && isVisibleControl(element)) {
-              generating = true;
-              generationReason = stopControl ? 'stop-control' : 'aria-busy';
-            }
-          }
-          if (!element.hasAttribute('data-message-author-role')) continue;
-          roles++;
-          const target = nearestTurn(element);
+        const busyControls = document.querySelectorAll('[aria-busy="true"],[data-testid*="stop" i],[aria-label*="stop" i]');
+        for (const element of busyControls) {
+          if (!isVisibleControl(element)) continue;
+          const testID = (element.getAttribute('data-testid') || '').toLowerCase();
+          const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
+          generating = true;
+          generationReason = testID.includes('stop') || ariaLabel.includes('stop') ? 'stop-control' : 'aria-busy';
+          break;
+        }
+
+        for (const roleNode of roleNodes) {
+          const target = nearestTurn(roleNode);
           if (target && !targetSet.has(target)) {
             targetSet.add(target);
             targets.push(target);
@@ -194,13 +449,18 @@ enum PerformanceOptimizer {
         }
 
         state.shells = shellSet.size;
-        state.roles = roles;
+        state.roles = roleNodes.length;
         state.generating = generating;
         state.generationReason = generationReason;
         state.visibleRoles = targets.filter(target => target.getAttribute(hiddenAttr) !== '1').length;
         targets.forEach((target, index) => {
-          if (index < targets.length - 1) target.setAttribute(completeAttr, '1');
-          else target.removeAttribute(completeAttr);
+          target.classList.add('rr-block');
+          if (index < targets.length - 1) {
+            target.setAttribute(completeAttr, '1');
+            optimizeCompletedTurn(target);
+          } else {
+            target.removeAttribute(completeAttr);
+          }
         });
 
         if (targets.length) {
@@ -232,6 +492,7 @@ enum PerformanceOptimizer {
           }
         }
 
+        collectActivities(targets);
         state.hidden = 0;
         state.visibleRoles = 0;
         for (const target of targets) {
@@ -239,24 +500,29 @@ enum PerformanceOptimizer {
           else state.visibleRoles++;
         }
         updateControl();
+        state.scanMs = Math.max(0, performance.now() - scanStarted);
       };
 
       const scheduleScan = delay => {
         if (state.scanTimer) window.clearTimeout(state.scanTimer);
-        state.scanTimer = window.setTimeout(scan, delay);
+        state.scanTimer = window.setTimeout(() => {
+          state.scanTimer = 0;
+          if (state.scanPending) return;
+          state.scanPending = true;
+          const run = () => {
+            state.scanPending = false;
+            scan();
+          };
+          if (window.requestIdleCallback) window.requestIdleCallback(run, {timeout: 500});
+          else run();
+        }, delay);
       };
 
+      const relevantSelector = '[data-turn-id],[data-testid^="conversation-turn-"],[data-message-author-role],[aria-busy="true"],[data-testid*="stop" i],details,pre,table,video,iframe,figure,[data-testid*="reason" i],[data-testid*="think" i],[data-testid*="tool" i],[data-testid*="search" i],[data-testid*="source" i],[data-testid*="citation" i]';
       const relevant = node => {
         if (!(node instanceof Element)) return false;
-        const testID = node.getAttribute('data-testid') || '';
-        if (isTurn(node) || node.hasAttribute('data-message-author-role') || testID === 'stop-button') return true;
-        const descendants = node.getElementsByTagName('*');
-        for (let i = 0; i < descendants.length; i++) {
-          const child = descendants[i];
-          const childTestID = child.getAttribute('data-testid') || '';
-          if (isTurn(child) || child.hasAttribute('data-message-author-role') || childTestID === 'stop-button') return true;
-        }
-        return false;
+        if (node.matches(relevantSelector)) return true;
+        return !!node.querySelector(relevantSelector);
       };
 
       const observer = new MutationObserver(mutations => {
@@ -288,11 +554,24 @@ enum PerformanceOptimizer {
             generating: state.generating,
             generationReason: state.generationReason,
             domNodes: state.domNodes,
-            nearBottom: state.nearBottom
+            nearBottom: state.nearBottom,
+            activityTotal: state.activityTotal,
+            reasoningCount: state.reasoningCount,
+            toolCount: state.toolCount,
+            detailCount: state.detailCount,
+            codeCount: state.codeCount,
+            tableCount: state.tableCount,
+            mediaCount: state.mediaCount,
+            scanMs: state.scanMs,
+            hiddenActivities: state.hiddenActivities,
+            activityMode: state.activityMode
           };
         },
         pressure(domNodes) {
-          if (Number.isFinite(domNodes) && domNodes >= 0) state.externalPressure = domNodes;
+          if (Number.isFinite(domNodes) && domNodes >= 0) {
+            state.externalPressure = domNodes;
+            state.domNodes = domNodes;
+          }
           scheduleScan(0);
         },
         revealAll() {

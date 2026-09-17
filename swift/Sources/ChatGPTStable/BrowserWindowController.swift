@@ -12,6 +12,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private let networkMonitor = NetworkMonitor()
     private let logger = Logger(subsystem: "pro.vakker.chatgpt-stable", category: "Stability")
     private let isPopup: Bool
+    private var leanInterfaceEnabled = true
 
     private var popupControllers: [BrowserWindowController] = []
     private var downloads: [ObjectIdentifier: WKDownload] = [:]
@@ -20,6 +21,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private var navigationWatchdog: DispatchWorkItem?
     private var heartbeatGeneration = 0
     private var heartbeatInFlight = false
+    private var lastHeartbeatStartedAt: Date?
     private var lastDOMNodeCount = 0
     private var lastTurnShellCount = 0
     private var lastMountedRoleCount = 0
@@ -30,6 +32,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private var lastGenerationReason = "none"
     private var lastComposerFocused = false
     private var lastNearBottom = true
+    private var lastActivityTotal = 0
+    private var lastReasoningCount = 0
+    private var lastToolCount = 0
+    private var lastDetailCount = 0
+    private var lastCodeCount = 0
+    private var lastTableCount = 0
+    private var lastMediaCount = 0
+    private var lastOptimizerScanMs: Double = 0
+    private var lastHiddenActivityCount = 0
+    private var lastActivityMode = "all"
     private var lastTrustedURL = AppSecurityPolicy.homeURL
     private var closeHandler: (() -> Void)?
     private var isClosed = false
@@ -110,6 +122,14 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         performPerformanceRefresh(reason: "manual conversation optimization")
     }
 
+    func setLeanInterfaceEnabled(_ enabled: Bool) {
+        guard !isPopup, leanInterfaceEnabled != enabled else { return }
+        leanInterfaceEnabled = enabled
+        rebuildWebView()
+    }
+
+    func isLeanInterfaceEnabled() -> Bool { leanInterfaceEnabled }
+
     @objc func goBack(_ sender: Any?) {
         if webView.canGoBack { webView.goBack() }
     }
@@ -148,6 +168,10 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             "Generating: \(lastIsGenerating ? "yes" : "no") (\(lastGenerationReason))",
             "Composer focused: \(lastComposerFocused ? "yes" : "no")",
             "Near conversation bottom: \(lastNearBottom ? "yes" : "no")",
+            "Activity: \(lastActivityTotal) (tool \(lastToolCount), reasoning \(lastReasoningCount), detail \(lastDetailCount))",
+            "Activity mode: \(lastActivityMode), parked \(lastHiddenActivityCount)",
+            "Lean scan: \(String(format: "%.1f ms", lastOptimizerScanMs))",
+            "Rich content: code \(lastCodeCount), tables \(lastTableCount), media \(lastMediaCount)",
             "Generation heartbeat grace misses: \(snapshot.generationHeartbeatTimeouts)",
             "Recent automatic recoveries: \(snapshot.recentRecoveries)",
             "Lifetime recoveries: \(snapshot.totalRecoveries)",
@@ -226,7 +250,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             config.websiteDataStore = .default()
         }
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        if !isPopup {
+        if !isPopup, leanInterfaceEnabled {
             PerformanceOptimizer.install(into: config.userContentController)
         }
 
@@ -331,6 +355,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         guard !isPopup, !isClosed, !webView.isLoading, !heartbeatInFlight else { return }
         if !force, (!window.isVisible || !NSApp.isActive) { return }
 
+        if !force, lastIsGenerating, let lastHeartbeatStartedAt, Date().timeIntervalSince(lastHeartbeatStartedAt) < 15 { return }
+
         let snapshot = supervisor.snapshot()
         guard snapshot.isOnline,
               snapshot.state != .waitingForNetwork,
@@ -338,6 +364,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
               snapshot.state != .failed else { return }
 
         heartbeatGeneration += 1
+        lastHeartbeatStartedAt = Date()
         let generation = heartbeatGeneration
         heartbeatInFlight = true
         let started = Date()
@@ -368,6 +395,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             report.generating = perf.generating;
             report.generationReason = perf.generationReason;
             report.nearBottom = perf.nearBottom;
+            report.activityTotal = perf.activityTotal;
+            report.reasoningCount = perf.reasoningCount;
+            report.toolCount = perf.toolCount;
+            report.detailCount = perf.detailCount;
+            report.codeCount = perf.codeCount;
+            report.tableCount = perf.tableCount;
+            report.mediaCount = perf.mediaCount;
+            report.scanMs = perf.scanMs;
+            report.hiddenActivities = perf.hiddenActivities;
+            report.activityMode = perf.activityMode;
           }
           if (\(measurePerformance ? "true" : "false") && b) {
             const nodeCount = document.getElementsByTagName('*').length;
@@ -401,6 +438,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             if let reason = report["generationReason"] as? String { self.lastGenerationReason = reason }
             if let focused = report["composerFocused"] as? Bool { self.lastComposerFocused = focused }
             if let nearBottom = report["nearBottom"] as? Bool { self.lastNearBottom = nearBottom }
+            if let count = (report["activityTotal"] as? NSNumber)?.intValue { self.lastActivityTotal = count }
+            if let count = (report["reasoningCount"] as? NSNumber)?.intValue { self.lastReasoningCount = count }
+            if let count = (report["toolCount"] as? NSNumber)?.intValue { self.lastToolCount = count }
+            if let count = (report["detailCount"] as? NSNumber)?.intValue { self.lastDetailCount = count }
+            if let count = (report["codeCount"] as? NSNumber)?.intValue { self.lastCodeCount = count }
+            if let count = (report["tableCount"] as? NSNumber)?.intValue { self.lastTableCount = count }
+            if let count = (report["mediaCount"] as? NSNumber)?.intValue { self.lastMediaCount = count }
+            if let ms = (report["scanMs"] as? NSNumber)?.doubleValue { self.lastOptimizerScanMs = ms }
+            if let count = (report["hiddenActivities"] as? NSNumber)?.intValue { self.lastHiddenActivityCount = count }
+            if let mode = report["activityMode"] as? String { self.lastActivityMode = mode }
             let renderable = challenge || (hasBody && children > 0)
             let latency = Date().timeIntervalSince(started)
             let action = self.supervisor.heartbeatSucceeded(latency: latency, renderable: renderable)
@@ -468,7 +515,10 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         switch supervisor.snapshot().state {
         case .starting: suffix = "Starting"
         case .loading: suffix = "Loading"
-        case .healthy: suffix = ""
+        case .healthy:
+            if lastIsGenerating { suffix = "Running" }
+            else if pressureController.snapshot().level == .severe { suffix = "Heavy conversation" }
+            else { suffix = "" }
         case .degraded: suffix = "Checking connection"
         case .waitingForNetwork: suffix = "Offline"
         case .recovering: suffix = "Recovering"

@@ -17,8 +17,12 @@ if [[ "$user_script_files" != 'Sources/ChatGPTStable/PerformanceOptimizer.swift'
   printf '%s\n' "${user_script_files:-<none>}" >&2
   exit 1
 fi
-if grep -nE 'document\.cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest|navigator\.clipboard|textContent|innerText|\.value\b|WKScriptMessageHandler|URLSession|httpCookieStore|HTTPCookie|NSAppleScript|UserDefaults' Sources/ChatGPTStable/PerformanceOptimizer.swift; then
+if grep -nE 'document\.cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest|navigator\.clipboard|textContent|innerText|innerHTML|outerHTML|insertAdjacentHTML|\.value\b|WKScriptMessageHandler|URLSession|httpCookieStore|HTTPCookie|NSAppleScript|UserDefaults' Sources/ChatGPTStable/PerformanceOptimizer.swift; then
   echo 'error: performance optimizer crossed the structural-only data boundary' >&2
+  exit 1
+fi
+if ! grep -q 'injectionTime: \.atDocumentStart' Sources/ChatGPTStable/PerformanceOptimizer.swift; then
+  echo 'error: lean UI must be installed at document start' >&2
   exit 1
 fi
 

@@ -14,6 +14,14 @@ ChatGPT Stable cooperates with ChatGPT's native conversation virtualization inst
 
 Every ~30 seconds the native health probe samples DOM size. Sustained severe pressure is allowed to finish streaming first, waits until the user is back near the conversation bottom and the composer is not focused, then rebuilds the `WKWebView` while reusing the same opaque WebKit website data store and sanitized conversation URL. Automatic performance refreshes have a 10-minute cooldown. `Navigation → Optimize Conversation Now` performs the same clean rebuild explicitly without counting as a crash recovery.
 
+## Lean interface
+
+Lean mode is enabled by default and can be disabled at runtime from `Navigation → Lean Interface`; toggling it rebuilds only the `WKWebView` and preserves the opaque WebKit website data store. The document-start layer removes nonfunctional motion, blur/backdrop-filter and shadow overhead, applies style containment to completed history and the composer, lazy-loads completed media, collapses completed native disclosure cards once, and hides only structurally identified upsell/promotion chrome outside conversations.
+
+For agent-heavy turns, an in-page Activity Rail indexes mounted Reasoning, Search, Browser, Computer, Terminal, Python, Research, Sources, Code, Table and Media structures without reading their text. Long activity streams are compacted structurally: completed sessions keep the latest 12 activity blocks mounted, high-pressure active generation keeps the latest 6, and every parked item remains represented in the rail. Clicking a parked item reveals and pins it; `Show all activity`/`Compact activity` reverses the policy.
+
+Completed conversation action chrome is visually dormant until hover/focus. Conversation turns and the composer are marked `rr-block`, a standard session-replay exclusion marker, so replay tooling can avoid serializing the most mutation-heavy/private DOM without blocking OpenAI network domains. The optimiser schedules structural rescans at browser idle time and avoids full-document element walks; a WebKit regression test enforces a generous structural-scan budget on a synthetic 12k-node page.
+
 ## Stability supervisor
 
 The native shell supervises WebKit without reading ChatGPT content. It uses a lightweight render heartbeat, Apple WebKit renderer-termination callbacks, `NWPathMonitor`, a navigation watchdog, and a rolling circuit breaker. Recovery escalates from reload, to cache-bypassing reload, to complete `WKWebView` replacement while preserving the opaque persistent `WKWebsiteDataStore`.

@@ -9,7 +9,8 @@
 - open unrelated HTTPS links in the system browser;
 - reload the current trusted page after a WebKit renderer failure or an obviously blank document;
 - persist only a sanitized ChatGPT page URL with query and fragment removed;
-- run one static, local structural-performance script that may count DOM/turn markers and hide/reveal completed turn shells without reading their text;
+- run one static, local structural-performance script that may count DOM/turn/activity markers, apply local CSS, and hide/reveal completed turn or activity shells without reading their text;
+- add local `rr-block` replay-exclusion markers to conversation turns, the composer and the local Activity Rail;
 - receive a completed WebKit download and choose a unique filename in Downloads.
 
 ## Native code must not
@@ -26,7 +27,7 @@
 
 ## Stability boundary
 
-The supervisor may inspect document readiness, body/DOM counts, focus type, and structural attributes such as `data-turn-id`, `data-testid`, `data-message-author-role`, `aria-busy`, and `aria-label` used to identify turn shells and generation controls. It must not inspect text, form values, prompts, messages, cookies or Web Storage. Native heartbeat checks run only while the app is active and visible.
+The supervisor may inspect document readiness, body/DOM counts, focus type, element tags and structural attributes such as `data-turn-id`, `data-testid`, `data-message-author-role`, `aria-busy`, and `aria-label` used to identify turn shells, generation controls and visible activity categories. The page script may modify local classes/styles/attributes and disclosure open state, but it must not inspect text, form values, prompts, messages, cookies or Web Storage. Native heartbeat checks run only while the app is active and visible, and back off while generation is active.
 
 The strongest recovery creates a new `WKWebView` and reuses the existing `WKWebsiteDataStore` object without enumerating its contents. DEBUG-only fault-injection hooks are compiled out of release builds, and the release packager rejects the build if their strings appear in the final binary.
 
