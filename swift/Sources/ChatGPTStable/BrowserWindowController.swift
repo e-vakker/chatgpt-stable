@@ -8,6 +8,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private(set) var webView: WKWebView!
 
     private let supervisor = HealthSupervisor()
+    private let pressureController = PerformancePressureController()
     private let networkMonitor = NetworkMonitor()
     private let logger = Logger(subsystem: "pro.vakker.chatgpt-stable", category: "Stability")
     private let isPopup: Bool
@@ -19,6 +20,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private var navigationWatchdog: DispatchWorkItem?
     private var heartbeatGeneration = 0
     private var heartbeatInFlight = false
+    private var lastDOMNodeCount = 0
+    private var lastTurnShellCount = 0
+    private var lastMountedRoleCount = 0
+    private var lastRawRoleCount = 0
+    private var lastHiddenTurnCount = 0
+    private var lastPerformanceMode = "native"
+    private var lastIsGenerating = false
+    private var lastGenerationReason = "none"
+    private var lastComposerFocused = false
+    private var lastNearBottom = true
     private var lastTrustedURL = AppSecurityPolicy.homeURL
     private var closeHandler: (() -> Void)?
     private var isClosed = false
@@ -26,6 +37,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     init(configuration: WKWebViewConfiguration? = nil, isPopup: Bool = false) {
         self.isPopup = isPopup
         super.init()
+        if !isPopup {
+            lastTrustedURL = SessionCheckpoint.load() ?? AppSecurityPolicy.homeURL
+        }
 
         webView = makeWebView(configuration: configuration)
 
@@ -62,7 +76,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             startHeartbeatTimer()
         }
         if loadHome, webView.url == nil {
-            load(AppSecurityPolicy.homeURL)
+            load(lastTrustedURL)
         }
     }
 
@@ -91,6 +105,11 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         performRecovery(supervisor.manualRecoveryRequested(), reason: "manual recovery")
     }
 
+    func optimizeNow() {
+        pressureController.manualRefreshPerformed()
+        performPerformanceRefresh(reason: "manual conversation optimization")
+    }
+
     @objc func goBack(_ sender: Any?) {
         if webView.canGoBack { webView.goBack() }
     }
@@ -110,6 +129,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
 
     func presentDiagnostics() {
         let snapshot = supervisor.snapshot()
+        let pressure = pressureController.snapshot()
         let latency = snapshot.lastHeartbeatLatency.map { String(format: "%.0f ms", $0 * 1000) } ?? "not measured"
         let host = webView.url?.host ?? lastTrustedURL.host ?? "unknown"
         let lines = [
@@ -117,6 +137,18 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             "Network: \(snapshot.isOnline ? "online" : "offline")",
             "Current host: \(host)",
             "Heartbeat latency: \(latency)",
+            "DOM nodes: \(lastDOMNodeCount)",
+            "Turn shells: \(lastTurnShellCount)",
+            "Mounted message roles: \(lastMountedRoleCount) / raw \(lastRawRoleCount)",
+            "Locally hidden turns: \(lastHiddenTurnCount)",
+            "Performance mode: \(lastPerformanceMode)",
+            "Performance pressure: \(pressure.level.rawValue)",
+            "Performance refresh pending: \(pressure.pendingRefresh ? "yes" : "no")",
+            "Automatic performance refreshes: \(pressure.automaticRefreshes)",
+            "Generating: \(lastIsGenerating ? "yes" : "no") (\(lastGenerationReason))",
+            "Composer focused: \(lastComposerFocused ? "yes" : "no")",
+            "Near conversation bottom: \(lastNearBottom ? "yes" : "no")",
+            "Generation heartbeat grace misses: \(snapshot.generationHeartbeatTimeouts)",
             "Recent automatic recoveries: \(snapshot.recentRecoveries)",
             "Lifetime recoveries: \(snapshot.totalRecoveries)",
             "Last failure: \(snapshot.lastFailure?.rawValue ?? "none")",
@@ -144,6 +176,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         cancelNavigationWatchdog()
         if let current = trustedCurrentURL() {
             lastTrustedURL = current
+            if !isPopup { SessionCheckpoint.save(current) }
         }
         supervisor.navigationFinished()
         updateWindowTitle()
@@ -193,6 +226,9 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             config.websiteDataStore = .default()
         }
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        if !isPopup {
+            PerformanceOptimizer.install(into: config.userContentController)
+        }
 
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = self
@@ -238,6 +274,12 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         case .rebuildWebView:
             rebuildWebView()
         }
+    }
+
+    private func performPerformanceRefresh(reason: String) {
+        guard !isClosed, !isPopup else { return }
+        logger.notice("Performance refresh reason=\(reason, privacy: .public)")
+        rebuildWebView()
     }
 
     private func rebuildWebView() {
@@ -303,31 +345,82 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, self.heartbeatInFlight, self.heartbeatGeneration == generation else { return }
             self.heartbeatInFlight = false
-            let action = self.supervisor.heartbeatTimedOut()
-            self.performRecovery(action, reason: "heartbeat timeout")
+            let action = self.supervisor.heartbeatTimedOut(isGenerating: self.lastIsGenerating)
+            self.performRecovery(action, reason: self.lastIsGenerating ? "heartbeat timeout during generation" : "heartbeat timeout")
         }
         heartbeatTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
 
-        let script = "(() => { const b=document.body; return {ready:document.readyState,hasBody:!!b,children:b ? b.children.length : 0,challenge:location.pathname.startsWith('/cdn-cgi/')}; })()"
+        let measurePerformance = heartbeatGeneration % 5 == 0
+        let script = """
+        (() => {
+          const b = document.body;
+          const report = {ready:document.readyState,hasBody:!!b,children:b ? b.children.length : 0,challenge:location.pathname.startsWith('/cdn-cgi/')};
+          const perf = window.__chatgptStablePerf?.snapshot?.() || null;
+          const active = document.activeElement;
+          report.composerFocused = !!active && (active.tagName === 'TEXTAREA' || active.getAttribute?.('contenteditable') === 'true');
+          if (perf) {
+            report.turnShells = perf.shells;
+            report.rawRoles = perf.roles;
+            report.mountedRoles = perf.visibleRoles;
+            report.hiddenTurns = perf.hidden;
+            report.performanceMode = perf.mode;
+            report.generating = perf.generating;
+            report.generationReason = perf.generationReason;
+            report.nearBottom = perf.nearBottom;
+          }
+          if (\(measurePerformance ? "true" : "false") && b) {
+            const nodeCount = document.getElementsByTagName('*').length;
+            report.domNodes = nodeCount;
+            window.__chatgptStablePerf?.pressure?.(nodeCount);
+          }
+          return report;
+        })()
+        """
         webView.evaluateJavaScript(script) { [weak self] value, error in
             guard let self, self.heartbeatInFlight, self.heartbeatGeneration == generation else { return }
             self.heartbeatInFlight = false
             self.cancelHeartbeatTimeout()
 
             guard error == nil, let report = value as? [String: Any] else {
-                let action = self.supervisor.heartbeatTimedOut()
-                self.performRecovery(action, reason: "heartbeat evaluation failed")
+                let action = self.supervisor.heartbeatTimedOut(isGenerating: self.lastIsGenerating)
+                self.performRecovery(action, reason: self.lastIsGenerating ? "heartbeat evaluation stalled during generation" : "heartbeat evaluation failed")
                 return
             }
 
             let hasBody = report["hasBody"] as? Bool ?? false
             let children = (report["children"] as? NSNumber)?.intValue ?? 0
             let challenge = report["challenge"] as? Bool ?? false
+            if let count = (report["domNodes"] as? NSNumber)?.intValue { self.lastDOMNodeCount = count }
+            if let count = (report["turnShells"] as? NSNumber)?.intValue { self.lastTurnShellCount = count }
+            if let count = (report["mountedRoles"] as? NSNumber)?.intValue { self.lastMountedRoleCount = count }
+            if let count = (report["rawRoles"] as? NSNumber)?.intValue { self.lastRawRoleCount = count }
+            if let count = (report["hiddenTurns"] as? NSNumber)?.intValue { self.lastHiddenTurnCount = count }
+            if let mode = report["performanceMode"] as? String { self.lastPerformanceMode = mode }
+            if let generating = report["generating"] as? Bool { self.lastIsGenerating = generating }
+            if let reason = report["generationReason"] as? String { self.lastGenerationReason = reason }
+            if let focused = report["composerFocused"] as? Bool { self.lastComposerFocused = focused }
+            if let nearBottom = report["nearBottom"] as? Bool { self.lastNearBottom = nearBottom }
             let renderable = challenge || (hasBody && children > 0)
             let latency = Date().timeIntervalSince(started)
             let action = self.supervisor.heartbeatSucceeded(latency: latency, renderable: renderable)
             self.performRecovery(action, reason: renderable ? "heartbeat healthy" : "blank render")
+            if action == .none, renderable {
+                let performanceAction = self.pressureController.observe(
+                    PerformancePressureSample(
+                        domNodes: self.lastDOMNodeCount,
+                        mountedRoles: self.lastMountedRoleCount,
+                        heartbeatLatency: latency,
+                        isGenerating: self.lastIsGenerating,
+                        composerFocused: self.lastComposerFocused,
+                        nearBottom: self.lastNearBottom
+                    ),
+                    structuralMeasurement: measurePerformance
+                )
+                if performanceAction == .refreshNow {
+                    self.performPerformanceRefresh(reason: "sustained frontend pressure")
+                }
+            }
             self.updateWindowTitle()
         }
     }

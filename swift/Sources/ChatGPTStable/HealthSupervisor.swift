@@ -29,6 +29,7 @@ struct BrowserHealthSnapshot {
     let totalRecoveries: Int
     let recentRecoveries: Int
     let consecutiveHeartbeatTimeouts: Int
+    let generationHeartbeatTimeouts: Int
     let lastHeartbeatLatency: TimeInterval?
     let lastFailure: BrowserFailureKind?
     let lastAction: RecoveryAction
@@ -45,6 +46,7 @@ final class HealthSupervisor {
     private(set) var isOnline = true
     private(set) var totalRecoveries = 0
     private(set) var consecutiveHeartbeatTimeouts = 0
+    private(set) var generationHeartbeatTimeouts = 0
     private(set) var lastHeartbeatLatency: TimeInterval?
     private(set) var lastFailure: BrowserFailureKind?
     private(set) var lastAction: RecoveryAction = .none
@@ -60,12 +62,14 @@ final class HealthSupervisor {
     func navigationFinished() {
         state = .healthy
         consecutiveHeartbeatTimeouts = 0
+        generationHeartbeatTimeouts = 0
         pendingNetworkRecovery = false
     }
 
     func heartbeatSucceeded(latency: TimeInterval, renderable: Bool) -> RecoveryAction {
         lastHeartbeatLatency = latency
         consecutiveHeartbeatTimeouts = 0
+        generationHeartbeatTimeouts = 0
         if renderable {
             if state == .degraded || state == .starting {
                 state = .healthy
@@ -76,12 +80,24 @@ final class HealthSupervisor {
         return automaticRecovery(for: .blankRender)
     }
 
-    func heartbeatTimedOut() -> RecoveryAction {
+    func heartbeatTimedOut(isGenerating: Bool = false) -> RecoveryAction {
         guard isOnline else {
             pendingNetworkRecovery = true
             state = .waitingForNetwork
             lastAction = .pauseForNetwork
             return .pauseForNetwork
+        }
+
+        if isGenerating {
+            generationHeartbeatTimeouts += 1
+            if generationHeartbeatTimeouts < 4 {
+                state = .degraded
+                lastFailure = .heartbeatTimeout
+                lastAction = .none
+                return .none
+            }
+        } else {
+            generationHeartbeatTimeouts = 0
         }
 
         consecutiveHeartbeatTimeouts += 1
@@ -141,6 +157,7 @@ final class HealthSupervisor {
     func manualRecoveryRequested() -> RecoveryAction {
         recoveryEvents.removeAll()
         consecutiveHeartbeatTimeouts = 0
+        generationHeartbeatTimeouts = 0
         state = .recovering
         lastAction = .rebuildWebView
         return .rebuildWebView
@@ -154,6 +171,7 @@ final class HealthSupervisor {
             totalRecoveries: totalRecoveries,
             recentRecoveries: recoveryEvents.count,
             consecutiveHeartbeatTimeouts: consecutiveHeartbeatTimeouts,
+            generationHeartbeatTimeouts: generationHeartbeatTimeouts,
             lastHeartbeatLatency: lastHeartbeatLatency,
             lastFailure: lastFailure,
             lastAction: lastAction
@@ -187,6 +205,7 @@ final class HealthSupervisor {
             }
         }
 
+        if failure == .heartbeatTimeout { generationHeartbeatTimeouts = 0 }
         recoveryEvents.append(now())
         totalRecoveries += 1
         state = .recovering

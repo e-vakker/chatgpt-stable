@@ -70,6 +70,24 @@ enum AppSecurityPolicy {
         return components.url
     }
 
+    static func checkpointURL(_ url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "https",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil || url.port == 443,
+              let host = url.host?.lowercased(),
+              isMediaCaptureHost(host),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        let path = components.path.lowercased()
+        guard !path.hasPrefix("/auth"), !path.hasPrefix("/login"),
+              !path.hasPrefix("/api"), !path.hasPrefix("/backend") else { return nil }
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
     static func isMediaCaptureHost(_ host: String) -> Bool {
         host == "chatgpt.com" || host.hasSuffix(".chatgpt.com")
             || host == "chat.openai.com" || host.hasSuffix(".chat.openai.com")

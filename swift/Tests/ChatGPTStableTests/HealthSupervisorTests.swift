@@ -11,6 +11,16 @@ final class HealthSupervisorTests: XCTestCase {
         XCTAssertEqual(supervisor.snapshot().state, .recovering)
     }
 
+    func testActiveGenerationGetsExtendedHeartbeatGrace() {
+        let supervisor = HealthSupervisor()
+        for expected in 1...4 {
+            XCTAssertEqual(supervisor.heartbeatTimedOut(isGenerating: true), .none)
+            XCTAssertEqual(supervisor.snapshot().generationHeartbeatTimeouts, expected)
+        }
+        XCTAssertEqual(supervisor.heartbeatTimedOut(isGenerating: true), .softReload)
+        XCTAssertEqual(supervisor.snapshot().generationHeartbeatTimeouts, 0)
+    }
+
     func testRecoveryEscalatesWithoutLoopingForever() {
         let supervisor = HealthSupervisor()
         XCTAssertEqual(supervisor.heartbeatSucceeded(latency: 0.01, renderable: false), .softReload)

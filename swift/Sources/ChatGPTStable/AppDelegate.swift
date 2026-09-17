@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hard = addMenuItem(navigationMenu, title: "Hard Reload", action: #selector(hardReload(_:)), key: "r")
         hard.keyEquivalentModifierMask = [.command, .shift]
         addMenuItem(navigationMenu, title: "Recover Now", action: #selector(recoverNow(_:)), key: "k")
+        addMenuItem(navigationMenu, title: "Optimize Conversation Now", action: #selector(optimizeNow(_:)), key: "")
         addMenuItem(navigationMenu, title: "ChatGPT Home", action: #selector(goHome(_:)), key: "0")
         navigationMenu.addItem(.separator())
         addMenuItem(navigationMenu, title: "Open Current Page in Browser", action: #selector(openInBrowser(_:)), key: "o")
@@ -61,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func reload(_ sender: Any?) { browser?.reload(sender) }
     @objc private func hardReload(_ sender: Any?) { browser?.hardReload(sender) }
     @objc private func recoverNow(_ sender: Any?) { browser?.recoverNow() }
+    @objc private func optimizeNow(_ sender: Any?) { browser?.optimizeNow() }
     @objc private func showDiagnostics(_ sender: Any?) { browser?.presentDiagnostics() }
     @objc private func goBack(_ sender: Any?) { browser?.goBack(sender) }
     @objc private func goForward(_ sender: Any?) { browser?.goForward(sender) }
