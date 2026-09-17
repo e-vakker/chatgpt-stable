@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hard.keyEquivalentModifierMask = [.command, .shift]
         addMenuItem(navigationMenu, title: "Recover Now", action: #selector(recoverNow(_:)), key: "")
         addMenuItem(navigationMenu, title: "Optimize Conversation Now", action: #selector(optimizeNow(_:)), key: "")
-        let interfaceItem = NSMenuItem()
+        let interfaceItem = NSMenuItem(title: "Interface", action: nil, keyEquivalent: "")
         let interfaceMenu = NSMenu(title: "Interface")
         let standard = addMenuItem(interfaceMenu, title: InterfaceMode.standard.displayName, action: #selector(useStandardInterface(_:)), key: "")
         let lean = addMenuItem(interfaceMenu, title: InterfaceMode.lean.displayName, action: #selector(useLeanInterface(_:)), key: "")
