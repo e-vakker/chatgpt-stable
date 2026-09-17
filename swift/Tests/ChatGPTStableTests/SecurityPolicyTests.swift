@@ -34,6 +34,18 @@ final class SecurityPolicyTests: XCTestCase {
         XCTAssertFalse(AppSecurityPolicy.isSafeSubframeURL(URL(string: "file:///tmp/x")!, sourceURL: source))
     }
 
+    func testInternalConversationRouteOnlyAcceptsSanitizedChatPaths() {
+        XCTAssertEqual(AppSecurityPolicy.conversationKey(for: URL(string: "https://chatgpt.com/c/abc?model=x#frag")!), "/c/abc")
+        XCTAssertEqual(AppSecurityPolicy.conversationKey(for: URL(string: "https://chatgpt.com/g/g-123/c/abc")!), "/g/g-123/c/abc")
+        XCTAssertNil(AppSecurityPolicy.conversationKey(for: URL(string: "https://chatgpt.com/")!))
+        XCTAssertNil(AppSecurityPolicy.conversationKey(for: URL(string: "https://example.com/c/abc")!))
+
+        let internalURL = URL(string: "chatgpt-stable://conversation?path=%2Fc%2Fabc")!
+        XCTAssertEqual(AppSecurityPolicy.conversationTarget(fromInternalURL: internalURL)?.absoluteString, "https://chatgpt.com/c/abc")
+        XCTAssertNil(AppSecurityPolicy.conversationTarget(fromInternalURL: URL(string: "chatgpt-stable://conversation?path=https%3A%2F%2Fevil.example")!))
+        XCTAssertNil(AppSecurityPolicy.conversationTarget(fromInternalURL: URL(string: "chatgpt-stable://conversation?path=%2Fapi%2Fc%2Fabc")!))
+    }
+
     func testMediaCaptureIsLimitedToChatSurfaces() {
         XCTAssertTrue(AppSecurityPolicy.isMediaCaptureHost("chatgpt.com"))
         XCTAssertTrue(AppSecurityPolicy.isMediaCaptureHost("chat.openai.com"))

@@ -3,14 +3,30 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-forbidden='httpCookieStore|HTTPCookie|NSAppleScript|NSPasteboard\.general\.string|URLSession|Process\(|WKScriptMessageHandler|document\.cookie|localStorage|sessionStorage|navigator\.clipboard|XMLHttpRequest|fetch\(|ipwho\.is|ipinfo\.io|Sparkle|dlopen|SecItem|kSec[A-Z]|Data\(contentsOf|homeDirectoryForCurrentUser|disable-library-validation|get-task-allow|allow-dyld-environment-variables'
+forbidden='httpCookieStore|HTTPCookie|NSAppleScript|NSPasteboard\.general\.string|URLSession|Process\(|document\.cookie|localStorage|sessionStorage|navigator\.clipboard|XMLHttpRequest|fetch\(|ipwho\.is|ipinfo\.io|Sparkle|dlopen|SecItem|kSec[A-Z]|Data\(contentsOf|homeDirectoryForCurrentUser|disable-library-validation|get-task-allow|allow-dyld-environment-variables'
 if grep -RInE "$forbidden" Sources Package.swift packaging/Info.plist packaging/entitlements.plist; then
   echo 'error: forbidden high-risk API or feature found in maintained client code' >&2
   exit 1
 fi
 
-# A single static page-side performance script is allowed. It may inspect structural attributes,
-# but it must not read message/form text, credentials, browser storage, or open a network channel.
+# Exactly one isolated, reply-only native bridge is allowed for warm-conversation routing.
+handler_files="$(grep -Rl 'WKScriptMessageHandler' Sources 2>/dev/null | sort || true)"
+if [[ "$handler_files" != 'Sources/ChatGPTStable/WarmCacheBridge.swift' ]]; then
+  echo 'error: native script-message handlers are permitted only in WarmCacheBridge.swift' >&2
+  printf '%s\n' "${handler_files:-<none>}" >&2
+  exit 1
+fi
+if grep -nE 'document\.cookie|localStorage|sessionStorage|URLSession|NSPasteboard|SecItem|httpCookieStore|HTTPCookie|FileManager|Data\(contentsOf|fetch\(|XMLHttpRequest' Sources/ChatGPTStable/WarmCacheBridge.swift; then
+  echo 'error: warm cache bridge crossed the path-only data boundary' >&2
+  exit 1
+fi
+if ! grep -q 'contentWorld: PerformanceOptimizer.routeContentWorld' Sources/ChatGPTStable/BrowserWindowController.swift; then
+  echo 'error: warm cache bridge must be registered in its isolated content world' >&2
+  exit 1
+fi
+
+# Static page-side scripts may inspect structural attributes only. They must not read message/form
+# text, credentials, browser storage, or open a network channel.
 user_script_files="$(grep -Rl 'WKUserScript' Sources 2>/dev/null || true)"
 if [[ "$user_script_files" != 'Sources/ChatGPTStable/PerformanceOptimizer.swift' ]]; then
   echo 'error: WKUserScript is permitted only in PerformanceOptimizer.swift' >&2

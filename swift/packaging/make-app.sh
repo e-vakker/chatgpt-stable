@@ -14,9 +14,10 @@ trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 cd "$ROOT"
 ./packaging/security-audit.sh
-swift test
-swift build -c release --arch arm64 --arch x86_64
-BIN_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
+SWIFT_SCRATCH="${CHATGPT_STABLE_SWIFT_SCRATCH:-$BUILD_ROOT/swift-scratch}"
+swift test --scratch-path "$SWIFT_SCRATCH"
+swift build --scratch-path "$SWIFT_SCRATCH" -c release --arch arm64 --arch x86_64
+BIN_DIR="$(swift build --scratch-path "$SWIFT_SCRATCH" -c release --arch arm64 --arch x86_64 --show-bin-path)"
 
 mkdir -p "$MACOS" "$DIST"
 cp "$BIN_DIR/$BINARY_NAME" "$MACOS/$BINARY_NAME"

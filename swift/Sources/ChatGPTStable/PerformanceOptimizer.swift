@@ -1,9 +1,15 @@
 import WebKit
 
 enum PerformanceOptimizer {
+    static let routeContentWorld = WKContentWorld.world(name: "ChatGPTStableWarmRoute")
+    static let routeHandlerName = "warmConversationCache"
+
     static func install(into controller: WKUserContentController) {
         controller.addUserScript(
             WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        controller.addUserScript(
+            WKUserScript(source: routeSource, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: routeContentWorld)
         )
     }
 
@@ -57,8 +63,16 @@ enum PerformanceOptimizer {
         activityMode: 'all',
         activityExpanded: true,
         showAllActivities: false,
-        railKeep: 40
+        railKeep: 40,
+        needsInitialBottom: false
       };
+
+      const isConversationPath = path => {
+        const parts = String(path || '').split('/').filter(Boolean);
+        const index = parts.indexOf('c');
+        return index >= 0 && index + 1 < parts.length && !!parts[index + 1];
+      };
+      state.needsInitialBottom = isConversationPath(location.pathname);
 
       document.documentElement?.setAttribute(leanAttr, '1');
 
@@ -495,6 +509,7 @@ enum PerformanceOptimizer {
         state.mode = 'native';
         state.showAllActivities = false;
         state.railKeep = 40;
+        state.needsInitialBottom = isConversationPath(location.pathname);
       };
 
       const scan = () => {
@@ -555,6 +570,10 @@ enum PerformanceOptimizer {
         if (targets.length) {
           const root = findScrollRoot(targets[targets.length - 1]);
           attachScrollRoot(root);
+          if (state.needsInitialBottom) {
+            root.scrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+            state.needsInitialBottom = false;
+          }
           const distanceFromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
           const nearBottom = distanceFromBottom < Math.max(600, root.clientHeight * 1.5);
           state.nearBottom = nearBottom;
@@ -675,6 +694,65 @@ enum PerformanceOptimizer {
 
       ensureStyle();
       scheduleScan(250);
+    })();
+    """#
+
+    private static let routeSource = #"""
+    (() => {
+      const host = String(location.hostname || '').toLowerCase();
+      const trusted = host === 'chatgpt.com' || host.endsWith('.chatgpt.com') ||
+        host === 'chat.openai.com' || host.endsWith('.chat.openai.com');
+      if (!trusted || window.__chatgptStableWarmRoute) return;
+      window.__chatgptStableWarmRoute = true;
+      const bypass = new WeakSet();
+      const isConversationPath = path => {
+        const parts = String(path || '').split('/').filter(Boolean);
+        const index = parts.indexOf('c');
+        return index >= 0 && index + 1 < parts.length && !!parts[index + 1];
+      };
+      const replay = anchor => {
+        bypass.add(anchor);
+        anchor.click();
+      };
+      const prewarmRecent = attempt => {
+        if (isConversationPath(location.pathname)) return;
+        const handler = window.webkit?.messageHandlers?.warmConversationCache;
+        if (!handler) return;
+        let path = null;
+        for (const anchor of document.querySelectorAll('a[href]')) {
+          let target;
+          try { target = new URL(anchor.href, location.href); } catch (_) { continue; }
+          if (target.origin === location.origin && isConversationPath(target.pathname)) { path = target.pathname; break; }
+        }
+        if (!path) {
+          if (attempt < 3) setTimeout(() => prewarmRecent(attempt + 1), 1500);
+          return;
+        }
+        Promise.resolve(handler.postMessage({op:'prewarm', path})).catch(() => {});
+      };
+      setTimeout(() => prewarmRecent(0), 2500);
+
+      document.addEventListener('click', event => {
+        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+        if (!anchor || bypass.has(anchor)) { if (anchor) bypass.delete(anchor); return; }
+        let target;
+        try { target = new URL(anchor.href, location.href); } catch (_) { return; }
+        if (target.origin !== location.origin || !isConversationPath(target.pathname)) return;
+        const handler = window.webkit?.messageHandlers?.warmConversationCache;
+        if (!handler) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        Promise.resolve(handler.postMessage({op:'query', path:target.pathname})).then(decision => {
+          if (decision === 'warm' || decision === 'preserve-current') {
+            const internal = new URL('chatgpt-stable://conversation');
+            internal.searchParams.set('path', target.pathname);
+            location.assign(internal.href);
+          } else {
+            replay(anchor);
+          }
+        }).catch(() => replay(anchor));
+      }, true);
     })();
     """#
 }

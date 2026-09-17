@@ -14,6 +14,12 @@ ChatGPT Stable cooperates with ChatGPT's native conversation virtualization inst
 
 Every ~30 seconds the native health probe samples DOM size and the lean layer's own structural-scan latency. Sustained severe pressure is allowed to finish streaming first, waits until the user is back near the conversation bottom and the composer is not focused, then rebuilds the `WKWebView` while reusing the same opaque WebKit website data store and sanitized conversation URL. Automatic performance refreshes have a 10-minute cooldown. `Navigation → Optimize Conversation Now` performs the same clean rebuild explicitly without counting as a crash recovery.
 
+## Fast conversation opening
+
+Cold conversations keep ChatGPT's own client-side navigation path. The native shell does not force a first-time chat into a new page load. Lean mode adds a two-entry warm conversation cache: the active conversation plus one recent expensive conversation may remain as live `WKWebView` instances sharing the same opaque `WKWebsiteDataStore`. Reopening a warm conversation swaps the existing live view instead of re-fetching and re-hydrating the long thread. If the source conversation is actively generating, its exact renderer is protected before another chat opens.
+
+Warm-cache lookup is exposed only to a separate WebKit content world through a reply-only path query. ChatGPT's ordinary JavaScript world cannot access the handler, and native code receives only a validated `/c/...`-style path. Cache misses replay the original click so ChatGPT's own SPA router handles first opens. While the app is idle on Home, the most recent conversation path is prewarmed in the background without reading its title or content; a settled cold navigation may also prewarm the previous conversation after a delay. Prewarming is cancelled while generation is active and inactive warm views are evicted immediately on macOS memory pressure. Initial conversation rendering also lands at the newest mounted turn instead of an arbitrary historical position. Health Diagnostics reports warm-cache hits/misses and the most recent cold/warm open mode and timing.
+
 ## Lean interface
 
 Lean mode is enabled by default and can be disabled at runtime from `Navigation → Lean Interface`; toggling it rebuilds only the `WKWebView` and preserves the opaque WebKit website data store. The document-start layer removes nonfunctional motion, blur/backdrop-filter and shadow overhead, applies style containment to completed history and the composer, lazy-loads completed media, collapses completed native disclosure cards once, and hides only structurally identified upsell/promotion chrome outside conversations.
@@ -44,7 +50,7 @@ A single missed heartbeat never reloads the page. Two consecutive misses are nor
 ```bash
 cd swift
 ./packaging/security-audit.sh
-swift test
+swift test --scratch-path /tmp/chatgpt-stable-swift-tests
 ./packaging/make-app.sh
 ```
 

@@ -33,6 +33,119 @@ final class BrowserIntegrationTests: XCTestCase {
         controller.window.close()
     }
 
+    func testWarmConversationReopenReusesLiveWebView() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        let urlA = URL(string: "https://chatgpt.com/c/cache-a")!
+        let urlB = URL(string: "https://chatgpt.com/c/cache-b")!
+        controller.webView.loadHTMLString("<html><body><section data-turn-id='a'><div data-message-author-role='assistant'>a</div></section></body></html>", baseURL: urlA)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let viewA = controller.webView!
+        controller.testCacheCurrentConversation(as: urlA)
+        let viewB = try XCTUnwrap(controller.testSeedWarmConversation(urlB, html: "<html><body><section data-turn-id='b'><div data-message-author-role='assistant'>b</div></section></body></html>"))
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        controller.testOpenConversation(urlB)
+        XCTAssertTrue(controller.webView === viewB)
+        XCTAssertEqual(controller.testLastConversationOpenMode(), "warm")
+        controller.testOpenConversation(urlA)
+        XCTAssertTrue(controller.webView === viewA)
+        XCTAssertEqual(controller.testWarmCacheStats().count, 2)
+        XCTAssertGreaterThanOrEqual(controller.testWarmCacheStats().hits, 2)
+        controller.window.close()
+    }
+
+    func testSidebarConversationClickUsesWarmCacheRoute() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        let urlA = URL(string: "https://chatgpt.com/c/click-a")!
+        let urlB = URL(string: "https://chatgpt.com/c/click-b")!
+        controller.webView.loadHTMLString("<html><body><a id='chat-link' href='/c/click-b'>open</a><section data-turn-id='a'><div data-message-author-role='assistant'>a</div></section></body></html>", baseURL: urlA)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        controller.testCacheCurrentConversation(as: urlA)
+        let viewB = try XCTUnwrap(controller.testSeedWarmConversation(urlB, html: "<html><body><section data-turn-id='b'><div data-message-author-role='assistant'>b</div></section></body></html>"))
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        _ = try await Self.evaluate("document.getElementById('chat-link').click()", in: controller.webView)
+        try await Task.sleep(nanoseconds: 350_000_000)
+        XCTAssertTrue(controller.webView === viewB)
+        XCTAssertEqual(controller.testLastConversationOpenMode(), "warm")
+        controller.window.close()
+    }
+
+    func testColdSidebarConversationClickFallsBackToPageHandler() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        let sourceURL = URL(string: "https://chatgpt.com/c/cold-source")!
+        controller.webView.loadHTMLString("""
+        <html><body data-chat-click='0'>
+          <a id='cold-link' href='/c/cold-target'>open</a>
+          <section data-turn-id='a'><div data-message-author-role='assistant'>a</div></section>
+          <script>
+            document.addEventListener('click', e => {
+              if (e.target.closest('#cold-link')) {
+                e.preventDefault();
+                document.body.setAttribute('data-chat-click','1');
+              }
+            }, true);
+          </script>
+        </body></html>
+        """, baseURL: sourceURL)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        controller.testCacheCurrentConversation(as: sourceURL)
+
+        _ = try await Self.evaluate("document.getElementById('cold-link').click()", in: controller.webView)
+        try await Task.sleep(nanoseconds: 350_000_000)
+        let clicked = try await Self.evaluate("document.body.getAttribute('data-chat-click')", in: controller.webView) as? String
+        XCTAssertEqual(clicked, "1")
+        XCTAssertEqual(controller.testLastConversationOpenMode(), "cold-spa")
+        controller.window.close()
+    }
+
+    func testWarmCacheBridgeIsHiddenFromPageWorld() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString("<html><body>x</body></html>", baseURL: URL(string: "https://chatgpt.com/")!)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let visible = try await Self.evaluate("!!window.webkit?.messageHandlers?.warmConversationCache", in: controller.webView) as? Bool
+        XCTAssertEqual(visible, false)
+        controller.window.close()
+    }
+
+    func testOpeningColdChatPreservesActivelyGeneratingSourceRenderer() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        let sourceURL = URL(string: "https://chatgpt.com/c/running-source")!
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 4, generating: true), baseURL: sourceURL)
+        try await Task.sleep(nanoseconds: 700_000_000)
+        controller.testCacheCurrentConversation(as: sourceURL)
+        controller.testRunHeartbeat()
+        try await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertEqual(controller.testWarmCacheDecision(for: "/c/next-chat"), "preserve-current")
+        controller.window.close()
+    }
+
+    func testIdleHomeCanPrewarmMostRecentConversationDeterministically() {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        XCTAssertEqual(controller.testPrewarmConversation(for: "/c/prewarm-recent"), "scheduled")
+        XCTAssertEqual(controller.testWarmCacheStats().count, 1)
+        XCTAssertEqual(controller.testPrewarmConversation(for: "/c/prewarm-recent"), "warm")
+        XCTAssertEqual(controller.testWarmCacheStats().count, 1)
+        controller.window.close()
+    }
+
+    func testConversationInitialOpenLandsAtNewestTurn() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticConversationWithoutInitialScroll(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/latest")!)
+        try await Task.sleep(nanoseconds: 900_000_000)
+        let distance = try await Self.evaluate("(() => { const r=document.getElementById('scroll'); return r.scrollHeight-r.scrollTop-r.clientHeight; })()", in: controller.webView) as? NSNumber
+        XCTAssertLessThanOrEqual(abs(distance?.doubleValue ?? 1000), 2)
+        controller.window.close()
+    }
+
     func testPerformanceOptimizerStaysNativeForSmallMountedHistory() async throws {
         let controller = BrowserWindowController()
         controller.show(loadHome: false)
@@ -157,6 +270,13 @@ final class BrowserIntegrationTests: XCTestCase {
         let duration = try await Self.evaluate("getComputedStyle(document.getElementById('motion')).transitionDuration", in: controller.webView) as? String
         XCTAssertTrue(duration == "0.001ms" || duration == "0s" || duration == "0.000001s")
         controller.window.close()
+    }
+
+    private static func syntheticConversationWithoutInitialScroll(turns: Int) -> String {
+        let items = (0..<turns).map { index in
+            "<section data-turn-id='t\(index)' data-testid='conversation-turn-\(index)' style='height:70px'><div data-message-author-role='assistant'>x</div></section>"
+        }.joined()
+        return "<html><body><div id='scroll' style='height:300px;overflow-y:auto'>\(items)</div></body></html>"
     }
 
     private static func syntheticConversation(turns: Int, generating: Bool = false) -> String {

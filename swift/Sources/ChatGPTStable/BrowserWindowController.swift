@@ -1,4 +1,5 @@
 import AppKit
+import Dispatch
 import OSLog
 import WebKit
 
@@ -11,10 +12,18 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private let pressureController = PerformancePressureController()
     private let networkMonitor = NetworkMonitor()
     private let logger = Logger(subsystem: "pro.vakker.chatgpt-stable", category: "Stability")
+    private let warmConversationCache = WarmConversationCache(maxEntries: 2)
     private let isPopup: Bool
     private var leanInterfaceEnabled = true
 
     private var popupControllers: [BrowserWindowController] = []
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var warmPreloadWorkItem: DispatchWorkItem?
+    private var activeConversationKey: String?
+    private var pendingColdConversationKey: String?
+    private var pendingColdOpenStartedAt: Date?
+    private var lastConversationOpenMode = "none"
+    private var lastConversationOpenDuration: TimeInterval?
     private var downloads: [ObjectIdentifier: WKDownload] = [:]
     private var heartbeatTimer: Timer?
     private var heartbeatTimeout: DispatchWorkItem?
@@ -88,6 +97,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         if !isPopup {
             networkMonitor.start()
             startHeartbeatTimer()
+            startMemoryPressureMonitor()
         }
         if loadHome, webView.url == nil {
             load(lastTrustedURL)
@@ -152,12 +162,16 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     func presentDiagnostics() {
         let snapshot = supervisor.snapshot()
         let pressure = pressureController.snapshot()
+        let cache = warmConversationCache.stats()
         let latency = snapshot.lastHeartbeatLatency.map { String(format: "%.0f ms", $0 * 1000) } ?? "not measured"
+        let openTime = lastConversationOpenDuration.map { String(format: "%.0f ms", $0 * 1000) } ?? "pending"
         let host = webView.url?.host ?? lastTrustedURL.host ?? "unknown"
         let lines = [
             "State: \(snapshot.state.rawValue)",
             "Network: \(snapshot.isOnline ? "online" : "offline")",
             "Current host: \(host)",
+            "Warm chat cache: \(cache.count)/2 (hits \(cache.hits), misses \(cache.misses))",
+            "Last chat open: \(lastConversationOpenMode) · \(openTime)",
             "Heartbeat latency: \(latency)",
             "DOM nodes: \(lastDOMNodeCount)",
             "Turn shells: \(lastTurnShellCount)",
@@ -202,7 +216,17 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         cancelNavigationWatchdog()
         if let current = trustedCurrentURL() {
             lastTrustedURL = current
-            if !isPopup { SessionCheckpoint.save(current) }
+            if !isPopup {
+                SessionCheckpoint.save(current)
+                if let key = AppSecurityPolicy.conversationKey(for: current) {
+                    warmConversationCache.store(webView, for: key, protected: lastIsGenerating)
+                    activeConversationKey = key
+                    disposeEvictedViews(warmConversationCache.evictIfNeeded(excluding: key))
+                } else {
+                    warmConversationCache.remove(view: webView)
+                    activeConversationKey = nil
+                }
+            }
         }
         supervisor.navigationFinished()
         updateWindowTitle()
@@ -254,6 +278,12 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         if !isPopup, leanInterfaceEnabled {
             config.mediaTypesRequiringUserActionForPlayback = [.video]
+            let bridge = WarmCacheBridge(owner: self)
+            config.userContentController.addScriptMessageHandler(
+                bridge,
+                contentWorld: PerformanceOptimizer.routeContentWorld,
+                name: PerformanceOptimizer.routeHandlerName
+            )
             PerformanceOptimizer.install(into: config.userContentController)
         }
 
@@ -279,6 +309,193 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private func trustedCurrentURL() -> URL? {
         guard let url = webView.url, AppSecurityPolicy.isTrustedMainFrameURL(url) else { return nil }
         return url
+    }
+
+    private func cacheActiveConversationIfNeeded() {
+        warmConversationCache.remove(view: webView)
+        let candidateURL = trustedCurrentURL() ?? lastTrustedURL
+        guard let key = AppSecurityPolicy.conversationKey(for: candidateURL) else {
+            activeConversationKey = nil
+            return
+        }
+        warmConversationCache.store(webView, for: key, protected: lastIsGenerating)
+        activeConversationKey = key
+        disposeEvictedViews(warmConversationCache.evictIfNeeded(excluding: key))
+    }
+
+    func warmCacheDecision(for path: String) -> String {
+        guard let targetURL = AppSecurityPolicy.conversationURL(forPath: path),
+              let targetKey = AppSecurityPolicy.conversationKey(for: targetURL) else { return "cold-spa" }
+        if warmConversationCache.containsKey(targetKey) { return "warm" }
+
+        lastConversationOpenMode = "cold-spa"
+        lastConversationOpenDuration = nil
+        pendingColdConversationKey = targetKey
+        pendingColdOpenStartedAt = Date()
+
+        let sourceCandidate = trustedCurrentURL() ?? lastTrustedURL
+        if let source = AppSecurityPolicy.checkpointURL(sourceCandidate),
+           let sourceKey = AppSecurityPolicy.conversationKey(for: source),
+           sourceKey != targetKey {
+            if lastIsGenerating {
+                lastConversationOpenMode = "preserve-current"
+                cacheActiveConversationIfNeeded()
+                return "preserve-current"
+            }
+            schedulePreviousConversationPrewarm(source, key: sourceKey)
+        }
+        return "cold-spa"
+    }
+
+    func prewarmConversation(for path: String) -> String {
+        guard !isPopup, window.isVisible, !lastIsGenerating,
+              let targetURL = AppSecurityPolicy.conversationURL(forPath: path),
+              let key = AppSecurityPolicy.conversationKey(for: targetURL),
+              key != activeConversationKey else { return "ignored" }
+        if warmConversationCache.containsKey(key) { return "warm" }
+        guard warmConversationCache.stats().count < 2 else { return "full" }
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = webView.configuration.websiteDataStore
+        let preload = makeWebView(configuration: configuration)
+        preload.navigationDelegate = nil
+        preload.uiDelegate = nil
+        warmConversationCache.store(preload, for: key, protected: false)
+        disposeEvictedViews(warmConversationCache.evictIfNeeded(excluding: activeConversationKey))
+        preload.load(URLRequest(url: targetURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30))
+        logger.debug("Proactively prewarming recent conversation")
+        return "scheduled"
+    }
+
+    private func schedulePreviousConversationPrewarm(_ url: URL, key: String, attempt: Int = 0) {
+        warmPreloadWorkItem?.cancel()
+        let sourceView = webView!
+        let dataStore = sourceView.configuration.websiteDataStore
+        let item = DispatchWorkItem { [weak self, weak sourceView] in
+            guard let self, let sourceView, !self.isClosed, sourceView === self.webView else { return }
+            let currentKey = self.webView.url.flatMap(AppSecurityPolicy.conversationKey(for:))
+            if currentKey == key {
+                if attempt < 2 { self.schedulePreviousConversationPrewarm(url, key: key, attempt: attempt + 1) }
+                return
+            }
+            if self.lastIsGenerating {
+                if attempt < 2 { self.schedulePreviousConversationPrewarm(url, key: key, attempt: attempt + 1) }
+                return
+            }
+
+            self.cacheActiveConversationIfNeeded()
+            guard !self.warmConversationCache.containsKey(key) else { return }
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = dataStore
+            let preload = self.makeWebView(configuration: configuration)
+            preload.navigationDelegate = nil
+            preload.uiDelegate = nil
+            self.warmConversationCache.store(preload, for: key, protected: false)
+            self.disposeEvictedViews(self.warmConversationCache.evictIfNeeded(excluding: self.activeConversationKey))
+            preload.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30))
+            self.logger.debug("Prewarming previous conversation path")
+        }
+        warmPreloadWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: item)
+    }
+
+    private func openConversationFast(_ url: URL) {
+        guard let key = AppSecurityPolicy.conversationKey(for: url), !isPopup else {
+            load(url)
+            return
+        }
+        let started = Date()
+        warmPreloadWorkItem?.cancel()
+        warmPreloadWorkItem = nil
+        cacheActiveConversationIfNeeded()
+
+        if let cached = warmConversationCache.view(for: key) {
+            switchToConversationView(cached, key: key)
+            lastTrustedURL = url
+            SessionCheckpoint.save(url)
+            lastConversationOpenMode = "warm"
+            lastConversationOpenDuration = Date().timeIntervalSince(started)
+            pendingColdConversationKey = nil
+            pendingColdOpenStartedAt = nil
+            return
+        }
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = webView.configuration.websiteDataStore
+        let destination = makeWebView(configuration: configuration)
+        warmConversationCache.store(destination, for: key, protected: false)
+        disposeEvictedViews(warmConversationCache.evictIfNeeded(excluding: key))
+        switchToConversationView(destination, key: key)
+        lastConversationOpenMode = "protected-cold"
+        lastConversationOpenDuration = nil
+        pendingColdConversationKey = key
+        pendingColdOpenStartedAt = started
+        loadTrustedURL(url, cachePolicy: .useProtocolCachePolicy)
+    }
+
+    private func switchToConversationView(_ destination: WKWebView, key: String) {
+        guard destination !== webView else {
+            activeConversationKey = key
+            return
+        }
+        let previous = webView!
+        let previousWasCached = warmConversationCache.contains(previous)
+        heartbeatGeneration &+= 1
+        heartbeatInFlight = false
+        cancelHeartbeatTimeout()
+        cancelNavigationWatchdog()
+        previous.navigationDelegate = nil
+        previous.uiDelegate = nil
+
+        destination.navigationDelegate = self
+        destination.uiDelegate = self
+        destination.frame = previous.frame
+        destination.autoresizingMask = [.width, .height]
+        webView = destination
+        window.contentView = destination
+        activeConversationKey = key
+        resetActiveViewMetrics()
+        supervisor.navigationFinished()
+        updateWindowTitle()
+        scheduleHeartbeat(after: 0.15)
+        if !previousWasCached { disposeWebView(previous) }
+    }
+
+    private func resetActiveViewMetrics() {
+        lastDOMNodeCount = 0
+        lastTurnShellCount = 0
+        lastMountedRoleCount = 0
+        lastRawRoleCount = 0
+        lastHiddenTurnCount = 0
+        lastPerformanceMode = "native"
+        lastIsGenerating = false
+        lastGenerationReason = "none"
+        lastComposerFocused = false
+        lastNearBottom = true
+        lastActivityTotal = 0
+        lastReasoningCount = 0
+        lastToolCount = 0
+        lastDetailCount = 0
+        lastErrorCount = 0
+        lastArtifactCount = 0
+        lastCodeCount = 0
+        lastTableCount = 0
+        lastMediaCount = 0
+        lastOptimizerScanMs = 0
+        lastHiddenActivityCount = 0
+        lastActivityMode = "all"
+    }
+
+    private func disposeWebView(_ view: WKWebView) {
+        guard view !== webView else { return }
+        view.stopLoading()
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+        view.removeFromSuperview()
+    }
+
+    private func disposeEvictedViews(_ views: [WKWebView]) {
+        views.forEach(disposeWebView)
     }
 
     private func performRecovery(_ action: RecoveryAction, reason: String) {
@@ -312,9 +529,11 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private func rebuildWebView() {
         guard !isClosed else { return }
         let target = trustedCurrentURL() ?? lastTrustedURL
+        let conversationKey = AppSecurityPolicy.conversationKey(for: target)
         let oldView = webView!
         let dataStore = oldView.configuration.websiteDataStore
 
+        warmConversationCache.remove(view: oldView)
         oldView.stopLoading()
         oldView.navigationDelegate = nil
         oldView.uiDelegate = nil
@@ -326,6 +545,14 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         replacement.autoresizingMask = [.width, .height]
         webView = replacement
         window.contentView = replacement
+        if let conversationKey {
+            warmConversationCache.store(replacement, for: conversationKey, protected: false)
+            activeConversationKey = conversationKey
+        } else {
+            activeConversationKey = nil
+        }
+        disposeWebView(oldView)
+        disposeEvictedViews(warmConversationCache.evictIfNeeded(excluding: conversationKey))
 
         loadTrustedURL(target, cachePolicy: .reloadIgnoringLocalCacheData)
     }
@@ -345,6 +572,28 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         cancelHeartbeatTimeout()
+    }
+
+    private func startMemoryPressureMonitor() {
+        guard memoryPressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.warmPreloadWorkItem?.cancel()
+            self.warmPreloadWorkItem = nil
+            let evicted = self.warmConversationCache.evictInactive(excluding: self.webView)
+            self.disposeEvictedViews(evicted)
+            if !evicted.isEmpty {
+                self.logger.notice("Evicted \(evicted.count) warm conversation view(s) under memory pressure")
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    private func stopMemoryPressureMonitor() {
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
     }
 
     private func scheduleHeartbeat(after delay: TimeInterval) {
@@ -455,6 +704,28 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             if let ms = (report["scanMs"] as? NSNumber)?.doubleValue { self.lastOptimizerScanMs = ms }
             if let count = (report["hiddenActivities"] as? NSNumber)?.intValue { self.lastHiddenActivityCount = count }
             if let mode = report["activityMode"] as? String { self.lastActivityMode = mode }
+            if let currentURL = self.webView.url,
+               let currentKey = AppSecurityPolicy.conversationKey(for: currentURL) {
+                if currentKey != self.activeConversationKey {
+                    self.warmConversationCache.remove(view: self.webView)
+                    self.warmConversationCache.store(self.webView, for: currentKey, protected: self.lastIsGenerating)
+                    self.activeConversationKey = currentKey
+                    self.disposeEvictedViews(self.warmConversationCache.evictIfNeeded(excluding: currentKey))
+                } else {
+                    self.warmConversationCache.setProtected(self.lastIsGenerating, for: currentKey)
+                }
+            } else if self.activeConversationKey != nil {
+                self.warmConversationCache.remove(view: self.webView)
+                self.activeConversationKey = nil
+            }
+            if let pendingKey = self.pendingColdConversationKey,
+               let startedAt = self.pendingColdOpenStartedAt,
+               AppSecurityPolicy.conversationKey(for: self.webView.url ?? self.lastTrustedURL) == pendingKey,
+               (self.lastMountedRoleCount > 0 || self.lastTurnShellCount > 0) {
+                self.lastConversationOpenDuration = Date().timeIntervalSince(startedAt)
+                self.pendingColdConversationKey = nil
+                self.pendingColdOpenStartedAt = nil
+            }
             let renderable = challenge || (hasBody && children > 0)
             let latency = Date().timeIntervalSince(started)
             let action = self.supervisor.heartbeatSucceeded(latency: latency, renderable: renderable)
@@ -555,6 +826,43 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     func testRebuildWebView() {
         performRecovery(.rebuildWebView, reason: "integration test")
     }
+
+    func testCacheCurrentConversation(as url: URL, protected: Bool = false) {
+        guard let key = AppSecurityPolicy.conversationKey(for: url) else { return }
+        warmConversationCache.store(webView, for: key, protected: protected)
+        activeConversationKey = key
+        lastTrustedURL = url
+    }
+
+    func testSeedWarmConversation(_ url: URL, html: String) -> WKWebView? {
+        guard let key = AppSecurityPolicy.conversationKey(for: url) else { return nil }
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = webView.configuration.websiteDataStore
+        let view = makeWebView(configuration: configuration)
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+        view.loadHTMLString(html, baseURL: url)
+        warmConversationCache.store(view, for: key, protected: false)
+        return view
+    }
+
+    func testOpenConversation(_ url: URL) {
+        openConversationFast(url)
+    }
+
+    func testWarmCacheStats() -> WarmConversationCache.Stats {
+        warmConversationCache.stats()
+    }
+
+    func testLastConversationOpenMode() -> String { lastConversationOpenMode }
+
+    func testWarmCacheDecision(for path: String) -> String {
+        warmCacheDecision(for: path)
+    }
+
+    func testPrewarmConversation(for path: String) -> String {
+        prewarmConversation(for: path)
+    }
 #endif
 
     func webView(
@@ -564,6 +872,17 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     ) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.cancel)
+            return
+        }
+
+        if url.scheme?.lowercased() == AppSecurityPolicy.internalConversationScheme {
+            guard navigationAction.targetFrame?.isMainFrame != false,
+                  let target = AppSecurityPolicy.conversationTarget(fromInternalURL: url) else {
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.cancel)
+            openConversationFast(target)
             return
         }
 
@@ -636,8 +955,12 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         isClosed = true
         heartbeatGeneration += 1
         stopHeartbeatTimer()
+        warmPreloadWorkItem?.cancel()
+        warmPreloadWorkItem = nil
+        stopMemoryPressureMonitor()
         cancelNavigationWatchdog()
         networkMonitor.stop()
+        disposeEvictedViews(warmConversationCache.drain())
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
