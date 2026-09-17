@@ -3,7 +3,9 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var browser: BrowserWindowController?
+    private weak var standardInterfaceItem: NSMenuItem?
     private weak var leanInterfaceItem: NSMenuItem?
+    private weak var terminalInterfaceItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -38,9 +40,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hard.keyEquivalentModifierMask = [.command, .shift]
         addMenuItem(navigationMenu, title: "Recover Now", action: #selector(recoverNow(_:)), key: "")
         addMenuItem(navigationMenu, title: "Optimize Conversation Now", action: #selector(optimizeNow(_:)), key: "")
-        let lean = addMenuItem(navigationMenu, title: "Lean Interface", action: #selector(toggleLeanInterface(_:)), key: "")
-        lean.state = .on
+        let interfaceItem = NSMenuItem()
+        let interfaceMenu = NSMenu(title: "Interface")
+        let standard = addMenuItem(interfaceMenu, title: InterfaceMode.standard.displayName, action: #selector(useStandardInterface(_:)), key: "")
+        let lean = addMenuItem(interfaceMenu, title: InterfaceMode.lean.displayName, action: #selector(useLeanInterface(_:)), key: "")
+        let terminal = addMenuItem(interfaceMenu, title: InterfaceMode.terminal.displayName, action: #selector(useTerminalInterface(_:)), key: "")
+        standardInterfaceItem = standard
         leanInterfaceItem = lean
+        terminalInterfaceItem = terminal
+        terminal.state = .on
+        interfaceItem.submenu = interfaceMenu
+        navigationMenu.addItem(interfaceItem)
         navigationMenu.addItem(.separator())
         addMenuItem(navigationMenu, title: "ChatGPT Home", action: #selector(goHome(_:)), key: "")
         navigationMenu.addItem(.separator())
@@ -68,11 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func hardReload(_ sender: Any?) { browser?.hardReload(sender) }
     @objc private func recoverNow(_ sender: Any?) { browser?.recoverNow() }
     @objc private func optimizeNow(_ sender: Any?) { browser?.optimizeNow() }
-    @objc private func toggleLeanInterface(_ sender: NSMenuItem) {
-        let enabled = sender.state != .on
-        browser?.setLeanInterfaceEnabled(enabled)
-        sender.state = enabled ? .on : .off
+    private func selectInterface(_ mode: InterfaceMode) {
+        browser?.setInterfaceMode(mode)
+        standardInterfaceItem?.state = mode == .standard ? .on : .off
+        leanInterfaceItem?.state = mode == .lean ? .on : .off
+        terminalInterfaceItem?.state = mode == .terminal ? .on : .off
     }
+
+    @objc private func useStandardInterface(_ sender: Any?) { selectInterface(.standard) }
+    @objc private func useLeanInterface(_ sender: Any?) { selectInterface(.lean) }
+    @objc private func useTerminalInterface(_ sender: Any?) { selectInterface(.terminal) }
     @objc private func showDiagnostics(_ sender: Any?) { browser?.presentDiagnostics() }
     @objc private func goBack(_ sender: Any?) { browser?.goBack(sender) }
     @objc private func goForward(_ sender: Any?) { browser?.goForward(sender) }

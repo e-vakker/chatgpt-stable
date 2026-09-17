@@ -4,7 +4,12 @@ enum PerformanceOptimizer {
     static let routeContentWorld = WKContentWorld.world(name: "ChatGPTStableWarmRoute")
     static let routeHandlerName = "warmConversationCache"
 
-    static func install(into controller: WKUserContentController) {
+    static func install(into controller: WKUserContentController, terminalMode: Bool = false) {
+        if terminalMode {
+            controller.addUserScript(
+                WKUserScript(source: TerminalInterface.source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            )
+        }
         controller.addUserScript(
             WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
         )
@@ -28,12 +33,13 @@ enum PerformanceOptimizer {
       const composerAttr = 'data-chatgpt-stable-composer';
       const autoCollapsedAttr = 'data-chatgpt-stable-autocollapsed';
       const bloatHiddenAttr = 'data-chatgpt-stable-bloat-hidden';
+      const terminalMode = document.documentElement?.getAttribute('data-chatgpt-stable-terminal') === '1';
       const originalDisplay = new WeakMap();
       const originalActivityDisplay = new WeakMap();
       let pinnedActivities = new WeakSet();
       const state = {
         path: location.pathname,
-        keep: 20,
+        keep: terminalMode ? 12 : 20,
         hidden: 0,
         shells: 0,
         roles: 0,
@@ -61,9 +67,9 @@ enum PerformanceOptimizer {
         scanMs: 0,
         hiddenActivities: 0,
         activityMode: 'all',
-        activityExpanded: true,
+        activityExpanded: !terminalMode,
         showAllActivities: false,
-        railKeep: 40,
+        railKeep: terminalMode ? 20 : 40,
         needsInitialBottom: false
       };
 
@@ -208,7 +214,9 @@ enum PerformanceOptimizer {
           state.activityMode = 'all';
         } else {
           const pressure = Math.max(state.domNodes, state.externalPressure);
-          const keep = state.generating && (pressure >= 5_000 || activities.length > 12) ? 6 : (activities.length > 12 ? 12 : activities.length);
+          const compactKeep = terminalMode ? 8 : 12;
+          const streamingKeep = terminalMode ? 4 : 6;
+          const keep = state.generating && (pressure >= 5_000 || activities.length > compactKeep) ? streamingKeep : (activities.length > compactKeep ? compactKeep : activities.length);
           const cutoff = Math.max(0, activities.length - keep);
           activities.forEach((item, index) => {
             if (item.kind === 'Error' || item.kind === 'Artifact') revealActivity(item.node);
@@ -217,7 +225,7 @@ enum PerformanceOptimizer {
           state.activityMode = cutoff > 0 ? (state.generating ? 'streaming' : 'compact') : 'all';
         }
         if (!state.generating) {
-          const collapseBefore = Math.max(0, activities.length - 3);
+          const collapseBefore = Math.max(0, activities.length - (terminalMode ? 2 : 3));
           activities.forEach((item, index) => {
             if (index >= collapseBefore || item.kind === 'Error' || item.kind === 'Artifact') return;
             if (item.node.tagName === 'DETAILS' && !item.node.hasAttribute(autoCollapsedAttr)) {
@@ -504,11 +512,11 @@ enum PerformanceOptimizer {
         for (const element of document.querySelectorAll(`[${hiddenAttr}="1"]`)) reveal(element);
         for (const element of document.querySelectorAll(`[${activityHiddenAttr}="1"]`)) revealActivity(element);
         state.path = location.pathname;
-        state.keep = 20;
+        state.keep = terminalMode ? 12 : 20;
         state.hidden = 0;
         state.mode = 'native';
         state.showAllActivities = false;
-        state.railKeep = 40;
+        state.railKeep = terminalMode ? 20 : 40;
         state.needsInitialBottom = isConversationPath(location.pathname);
       };
 
@@ -579,7 +587,8 @@ enum PerformanceOptimizer {
           state.nearBottom = nearBottom;
           const canHide = shellSet.size >= targets.length;
 
-          const streamingPressure = generating && Math.max(state.domNodes, state.externalPressure) >= 9_000;
+          const streamingPressureThreshold = terminalMode ? 5_000 : 9_000;
+          const streamingPressure = generating && Math.max(state.domNodes, state.externalPressure) >= streamingPressureThreshold;
           if (streamingPressure && targets.length > 4 && nearBottom && canHide) {
             const cutoff = Math.max(0, targets.length - 4);
             for (let i = 0; i < targets.length; i++) {
@@ -587,16 +596,18 @@ enum PerformanceOptimizer {
               else reveal(targets[i]);
             }
             state.mode = 'streaming';
-          } else if (targets.length > 32 && nearBottom && canHide) {
+          } else if (targets.length > (terminalMode ? 20 : 32) && nearBottom && canHide) {
             const pressure = Math.max(state.domNodes, state.externalPressure);
-            const tailKeep = pressure >= 12_000 ? 8 : (pressure >= 5_000 ? 12 : state.keep);
+            const tailKeep = terminalMode
+              ? (pressure >= 12_000 ? 6 : (pressure >= 5_000 ? 8 : state.keep))
+              : (pressure >= 12_000 ? 8 : (pressure >= 5_000 ? 12 : state.keep));
             const cutoff = Math.max(0, targets.length - tailKeep);
             for (let i = 0; i < targets.length; i++) {
               if (i < cutoff) hide(targets[i]);
               else reveal(targets[i]);
             }
             state.mode = 'tail';
-          } else if (targets.length <= 32) {
+          } else if (targets.length <= (terminalMode ? 20 : 32)) {
             targets.forEach(reveal);
             state.mode = 'native';
           }
@@ -639,10 +650,10 @@ enum PerformanceOptimizer {
         if (document.hidden) return;
         for (const mutation of mutations) {
           for (const node of mutation.addedNodes) {
-            if (relevant(node)) { scheduleScan(350); return; }
+            if (relevant(node)) { scheduleScan(terminalMode ? 500 : 350); return; }
           }
           for (const node of mutation.removedNodes) {
-            if (relevant(node)) { scheduleScan(350); return; }
+            if (relevant(node)) { scheduleScan(terminalMode ? 500 : 350); return; }
           }
         }
       });

@@ -161,6 +161,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testElevatedPressureTightensConversationTail() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticConversation(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 700_000_000)
@@ -174,6 +175,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testSeverePressureTightensConversationTailFurther() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticConversation(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 700_000_000)
@@ -187,6 +189,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testPerformanceOptimizerVirtualizesLargeMountedHistory() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticConversation(turns: 40), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 900_000_000)
@@ -243,6 +246,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testLeanInterfaceIndexesActivityWithoutReadingContent() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticActivityConversation(), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 800_000_000)
@@ -264,6 +268,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testLeanInterfaceDisablesMotionAtDocumentStart() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString("<html><body><div id='motion' style='transition: all 4s; animation: pulse 4s infinite'>x</div></body></html>", baseURL: URL(string: "https://chatgpt.com/")!)
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -331,8 +336,104 @@ final class BrowserIntegrationTests: XCTestCase {
         controller.window.close()
     }
 
+    func testTerminalInterfaceIsDefaultAndModeSwitchingRebuildsWebView() {
+        let controller = BrowserWindowController()
+        XCTAssertEqual(controller.currentInterfaceMode(), .terminal)
+        XCTAssertEqual(controller.webView.configuration.userContentController.userScripts.count, 3)
+
+        let terminalView = controller.webView!
+        controller.setInterfaceMode(.lean)
+        XCTAssertFalse(terminalView === controller.webView)
+        XCTAssertEqual(controller.currentInterfaceMode(), .lean)
+        XCTAssertEqual(controller.webView.configuration.userContentController.userScripts.count, 2)
+
+        let leanView = controller.webView!
+        controller.setInterfaceMode(.standard)
+        XCTAssertFalse(leanView === controller.webView)
+        XCTAssertEqual(controller.webView.configuration.userContentController.userScripts.count, 0)
+
+        controller.setInterfaceMode(.terminal)
+        XCTAssertEqual(controller.webView.configuration.userContentController.userScripts.count, 3)
+        controller.window.close()
+    }
+
+    func testTerminalInterfaceRemovesChromeButKeepsSendControlAndRestoresChats() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString("""
+        <html><body>
+          <aside class='dframe-sidebar'>history</aside>
+          <div data-testid='chat-header'>header</div>
+          <main>
+            <section data-turn-id='t0' data-testid='conversation-turn-0'>
+              <div data-message-author-role='user'><div data-user-message-bubble='true'>prompt</div></div>
+              <div data-message-action-bar>actions</div>
+            </section>
+            <form><div id='prompt-textarea' data-lexical-editor='true' contenteditable='true'></div><button data-testid='composer-plus-btn'>plus</button><button data-testid='send-button'>send</button></form>
+          </main>
+        </body></html>
+        """, baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 700_000_000)
+
+        let values = try await Self.evaluate("(() => ({terminal:document.documentElement.getAttribute('data-chatgpt-stable-terminal'), sidebar:getComputedStyle(document.querySelector('aside')).display, header:getComputedStyle(document.querySelector('[data-testid=chat-header]')).display, plus:getComputedStyle(document.querySelector('[data-testid=composer-plus-btn]')).display, send:getComputedStyle(document.querySelector('[data-testid=send-button]')).display, actions:getComputedStyle(document.querySelector('[data-message-action-bar]')).display, mono:getComputedStyle(document.querySelector('[data-message-author-role=user]')).fontFamily, toggle:!!document.getElementById('chatgpt-stable-terminal-sidebar-toggle')}))()", in: controller.webView) as? [String: Any]
+        XCTAssertEqual(values?["terminal"] as? String, "1")
+        XCTAssertEqual(values?["sidebar"] as? String, "none")
+        XCTAssertEqual(values?["header"] as? String, "none")
+        XCTAssertEqual(values?["plus"] as? String, "none")
+        XCTAssertNotEqual(values?["send"] as? String, "none")
+        XCTAssertEqual(values?["actions"] as? String, "none")
+        XCTAssertTrue((values?["mono"] as? String)?.lowercased().contains("mono") == true || (values?["mono"] as? String)?.contains("Menlo") == true)
+        XCTAssertEqual(values?["toggle"] as? Bool, true)
+
+        _ = try await Self.evaluate("document.getElementById('chatgpt-stable-terminal-sidebar-toggle').click()", in: controller.webView)
+        let sidebarAfter = try await Self.evaluate("getComputedStyle(document.querySelector('aside')).display", in: controller.webView) as? String
+        XCTAssertNotEqual(sidebarAfter, "none")
+        controller.window.close()
+    }
+
+    func testTerminalConversationTailIsMoreAggressiveThanLean() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticConversation(turns: 30), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        var snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 12)
+        XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 18)
+
+        _ = try await Self.evaluate("window.__chatgptStablePerf?.pressure?.(10000)", in: controller.webView)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 8)
+        XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 22)
+
+        _ = try await Self.evaluate("window.__chatgptStablePerf?.pressure?.(20000)", in: controller.webView)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["visibleRoles"] as? NSNumber)?.intValue, 6)
+        XCTAssertEqual((snapshot["hidden"] as? NSNumber)?.intValue, 24)
+        controller.window.close()
+    }
+
+    func testTerminalActivityKeepsEightCompletedAndFourStreamingCards() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 14), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        var snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["hiddenActivities"] as? NSNumber)?.intValue, 6)
+        XCTAssertEqual(snapshot["activityMode"] as? String, "compact")
+
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 14, generating: true), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        snapshot = try await Self.performanceSnapshot(from: controller.webView)
+        XCTAssertEqual((snapshot["hiddenActivities"] as? NSNumber)?.intValue, 10)
+        XCTAssertEqual(snapshot["activityMode"] as? String, "streaming")
+        controller.window.close()
+    }
+
     func testShowAllActivityControlRestoresParkedCards() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 30), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 900_000_000)
@@ -354,6 +455,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testLeanStructuralScanStaysBoundedOnLargeNoisyDOM() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticNoisyConversation(noiseNodes: 12_000, activityCount: 30), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 1_300_000_000)
@@ -370,6 +472,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testCompletedAgentTurnStaysCompactAndCollapsesOldDisclosuresOnce() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticOpenToolConversation(activityCount: 14), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 900_000_000)
@@ -425,24 +528,23 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testActivityRailKeepsOnlyLatestFortyRowsUntilExpanded() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 90), baseURL: URL(string: "https://chatgpt.com/c/test")!)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        var rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
-        XCTAssertEqual(rows?.intValue, 41)
+        let initialRowsReady = try await Self.waitForJavaScript("document.querySelectorAll('#chatgpt-stable-activity-list button').length === 41", in: controller.webView)
+        XCTAssertTrue(initialRowsReady)
         _ = try await Self.evaluate("document.querySelector('#chatgpt-stable-activity-list button').click()", in: controller.webView)
-        try await Task.sleep(nanoseconds: 150_000_000)
-        rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
-        XCTAssertEqual(rows?.intValue, 81)
+        let firstExpansionReady = try await Self.waitForJavaScript("document.querySelectorAll('#chatgpt-stable-activity-list button').length === 81", in: controller.webView)
+        XCTAssertTrue(firstExpansionReady)
         _ = try await Self.evaluate("document.querySelector('#chatgpt-stable-activity-list button').click()", in: controller.webView)
-        try await Task.sleep(nanoseconds: 150_000_000)
-        rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
-        XCTAssertEqual(rows?.intValue, 90)
+        let secondExpansionReady = try await Self.waitForJavaScript("document.querySelectorAll('#chatgpt-stable-activity-list button').length === 90", in: controller.webView)
+        XCTAssertTrue(secondExpansionReady)
         controller.window.close()
     }
 
     func testActivityVirtualizationParksOlderCardsButKeepsRailIndex() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 30), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 900_000_000)
@@ -463,6 +565,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testStreamingActivityVirtualizationKeepsLatestSix() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 14, generating: true), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 900_000_000)
@@ -477,6 +580,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testCompletedTurnActionsAreVisuallyDormant() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticActionFixture(), baseURL: URL(string: "https://chatgpt.com/c/test")!)
         try await Task.sleep(nanoseconds: 700_000_000)
@@ -489,6 +593,7 @@ final class BrowserIntegrationTests: XCTestCase {
 
     func testLeanInterfaceHidesOnlyNonConversationUpsellChrome() async throws {
         let controller = BrowserWindowController()
+        controller.setInterfaceMode(.lean)
         controller.show(loadHome: false)
         controller.webView.loadHTMLString(Self.syntheticBloatFixture(), baseURL: URL(string: "https://chatgpt.com/")!)
         try await Task.sleep(nanoseconds: 700_000_000)
@@ -607,6 +712,18 @@ final class BrowserIntegrationTests: XCTestCase {
                 continuation.resume(returning: value)
             }
         }
+    }
+
+    private static func waitForJavaScript(
+        _ script: String,
+        in webView: WKWebView,
+        attempts: Int = 20
+    ) async throws -> Bool {
+        for _ in 0..<attempts {
+            if (try await evaluate(script, in: webView) as? Bool) == true { return true }
+            try await Task.sleep(nanoseconds: 150_000_000)
+        }
+        return false
     }
 
     private static func performanceSnapshot(from webView: WKWebView) async throws -> [String: Any] {

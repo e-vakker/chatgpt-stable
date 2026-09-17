@@ -37,6 +37,14 @@ if grep -nE 'document\.cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest
   echo 'error: performance optimizer crossed the structural-only data boundary' >&2
   exit 1
 fi
+if grep -nE 'document\.cookie|localStorage|sessionStorage|fetch\(|XMLHttpRequest|navigator\.clipboard|textContent|innerText|innerHTML|outerHTML|insertAdjacentHTML|\.value\b|WKScriptMessageHandler|URLSession|httpCookieStore|HTTPCookie|NSAppleScript|UserDefaults' Sources/ChatGPTStable/TerminalInterface.swift; then
+  echo 'error: terminal interface crossed the structural-only data boundary' >&2
+  exit 1
+fi
+if ! grep -q 'WKUserScript(source: TerminalInterface.source, injectionTime: \.atDocumentStart' Sources/ChatGPTStable/PerformanceOptimizer.swift; then
+  echo 'error: terminal interface must be installed at document start' >&2
+  exit 1
+fi
 if ! grep -q 'injectionTime: \.atDocumentStart' Sources/ChatGPTStable/PerformanceOptimizer.swift; then
   echo 'error: lean UI must be installed at document start' >&2
   exit 1

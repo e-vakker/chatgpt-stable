@@ -9,7 +9,7 @@
 - open unrelated HTTPS links in the system browser;
 - reload the current trusted page after a WebKit renderer failure or an obviously blank document;
 - persist only a sanitized ChatGPT page URL with query and fragment removed;
-- run one static, local structural-performance script that may count DOM/turn/activity markers, apply local CSS, and hide/reveal completed turn or activity shells without reading their text;
+- run local document-start structural-performance and Terminal presentation scripts that may count DOM/turn/activity markers, apply local CSS, and hide/reveal completed turn or activity shells without reading their text;
 - add local `rr-block` replay-exclusion markers to conversation turns, the composer and the local Activity Rail;
 - expose one isolated reply-only WebKit bridge that accepts only a validated conversation path and returns a routing decision (`warm`, `preserve-current`, or `cold-spa`);
 - receive a completed WebKit download and choose a unique filename in Downloads.
@@ -34,7 +34,7 @@ The strongest recovery creates a new `WKWebView` and reuses the existing `WKWebs
 
 ## Build gates
 
-`swift/packaging/security-audit.sh` rejects high-risk APIs, unexpected hard-coded HTTPS destinations, CJK UI/source text, third-party Swift dependencies, additional native JavaScript evaluation sites, and any performance-script attempt to read content/forms/storage or open a network channel. It permits exactly one native script-message handler, in `WarmCacheBridge.swift`, and verifies that it is registered only in the isolated routing content world.
+`swift/packaging/security-audit.sh` rejects high-risk APIs, unexpected hard-coded HTTPS destinations, CJK UI/source text, third-party Swift dependencies, additional native JavaScript evaluation sites, and any performance/Terminal script attempt to read content/forms/storage or open a network channel. It permits exactly one native script-message handler, in `WarmCacheBridge.swift`, and verifies that it is registered only in the isolated routing content world.
 
 `swift/packaging/make-app.sh` reruns the source audit and tests, signs with App Sandbox + Hardened Runtime, verifies the signature, rejects forbidden entitlements, rejects non-system linked libraries, checks the final binary's URL strings, and checks for credential/storage indicators.
 

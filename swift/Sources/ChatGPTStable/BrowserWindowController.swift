@@ -14,7 +14,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
     private let logger = Logger(subsystem: "pro.vakker.chatgpt-stable", category: "Stability")
     private let warmConversationCache = WarmConversationCache(maxEntries: 2)
     private let isPopup: Bool
-    private var leanInterfaceEnabled = true
+    private var interfaceMode: InterfaceMode = .terminal
 
     private var popupControllers: [BrowserWindowController] = []
     private var memoryPressureSource: DispatchSourceMemoryPressure?
@@ -134,13 +134,19 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         performPerformanceRefresh(reason: "manual conversation optimization")
     }
 
-    func setLeanInterfaceEnabled(_ enabled: Bool) {
-        guard !isPopup, leanInterfaceEnabled != enabled else { return }
-        leanInterfaceEnabled = enabled
+    func setInterfaceMode(_ mode: InterfaceMode) {
+        guard !isPopup, interfaceMode != mode else { return }
+        interfaceMode = mode
         rebuildWebView()
     }
 
-    func isLeanInterfaceEnabled() -> Bool { leanInterfaceEnabled }
+    func currentInterfaceMode() -> InterfaceMode { interfaceMode }
+
+    func setLeanInterfaceEnabled(_ enabled: Bool) {
+        setInterfaceMode(enabled ? .lean : .standard)
+    }
+
+    func isLeanInterfaceEnabled() -> Bool { interfaceMode.usesPerformanceLayer }
 
     @objc func goBack(_ sender: Any?) {
         if webView.canGoBack { webView.goBack() }
@@ -170,6 +176,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             "State: \(snapshot.state.rawValue)",
             "Network: \(snapshot.isOnline ? "online" : "offline")",
             "Current host: \(host)",
+            "Interface: \(interfaceMode.displayName)",
             "Warm chat cache: \(cache.count)/2 (hits \(cache.hits), misses \(cache.misses))",
             "Last chat open: \(lastConversationOpenMode) · \(openTime)",
             "Heartbeat latency: \(latency)",
@@ -276,7 +283,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
             config.websiteDataStore = .default()
         }
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        if !isPopup, leanInterfaceEnabled {
+        if !isPopup, interfaceMode.usesPerformanceLayer {
             config.mediaTypesRequiringUserActionForPlayback = [.video]
             let bridge = WarmCacheBridge(owner: self)
             config.userContentController.addScriptMessageHandler(
@@ -284,7 +291,10 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
                 contentWorld: PerformanceOptimizer.routeContentWorld,
                 name: PerformanceOptimizer.routeHandlerName
             )
-            PerformanceOptimizer.install(into: config.userContentController)
+            PerformanceOptimizer.install(
+                into: config.userContentController,
+                terminalMode: interfaceMode.isTerminal
+            )
         }
 
         let view = WKWebView(frame: .zero, configuration: config)
