@@ -5,7 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 APP_NAME="ChatGPT Swift"
 BINARY_NAME="ChatGPTSwiftWeb"
-APP_DIR="$ROOT/dist/$APP_NAME.app"
+LEGACY_APP_DIR="$ROOT/dist/$APP_NAME.app"
+APP_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chatgpt-swift-build.XXXXXX")"
+APP_DIR="$APP_BUILD_ROOT/$APP_NAME.app"
 ARCHIVE="$ROOT/dist/$APP_NAME.zip"
 ARCHIVE_TMP="$ARCHIVE.tmp.$$"
 CONTENTS="$APP_DIR/Contents"
@@ -68,7 +70,7 @@ cleanup_failed_build() {
   fi
   if [[ "$status" -ne 0 ]]; then
     unregister_app_bundle "$APP_DIR"
-    rm -rf "$APP_DIR"
+    rm -rf "$APP_BUILD_ROOT"
     rm -f "$ARCHIVE_TMP"
     rm -f "$ROOT/dist/.metadata_never_index"
   fi
@@ -99,14 +101,19 @@ if [[ -d .build ]]; then
     "$LSREGISTER" -u "$nested_app" >/dev/null 2>&1 || true
   done < <(find .build -type d -name '*.app' -prune -print0 2>/dev/null)
 fi
-unregister_app_bundle "$APP_DIR"
-rm -rf "$APP_DIR"
+unregister_app_bundle "$LEGACY_APP_DIR"
+rm -rf "$LEGACY_APP_DIR"
 
 swift build -c release --arch arm64 --arch x86_64
 UNIVERSAL_RELEASE_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
 
 if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY="$("$REPO_ROOT/tauri/packaging/ensure-local-codesign-cert.sh")"
+  SIGN_IDENTITY="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null \
+    | /usr/bin/sed -nE 's/.*"(Apple Development:[^"]+)".*/\1/p' \
+    | /usr/bin/head -n 1)"
+  if [[ -z "$SIGN_IDENTITY" ]]; then
+    SIGN_IDENTITY="$("$REPO_ROOT/tauri/packaging/ensure-local-codesign-cert.sh")"
+  fi
 fi
 SIGNING_DISTRIBUTION="github"
 case "$SIGN_IDENTITY" in
@@ -184,6 +191,9 @@ fi
 
 if ! /usr/bin/otool -l "$MACOS/$BINARY_NAME" | /usr/bin/grep -q '@executable_path/../Frameworks'; then
   /usr/bin/install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS/$BINARY_NAME"
+  # install_name_tool mutates the Mach-O after SwiftPM has signed it. Remove that now-stale
+  # embedded signature so bundle signing does not reject the executable as malformed metadata.
+  /usr/bin/codesign --remove-signature "$MACOS/$BINARY_NAME" 2>/dev/null || true
 fi
 
 if [[ -f "$ICON_SOURCE" ]]; then
@@ -193,6 +203,9 @@ else
 fi
 
 chmod +x "$MACOS/$BINARY_NAME"
+# Clean copied build metadata before signing. On macOS 26 this also avoids codesign treating
+# stale resource/Finder metadata from mutated build products as part of the bundle.
+/usr/bin/xattr -cr "$APP_DIR"
 
 codesign_args=(--force --deep --options runtime --sign "$SIGN_IDENTITY")
 if [[ "$SIGN_TIMESTAMP" == "1" ]]; then
@@ -211,6 +224,7 @@ if [[ "$SIGN_TIMESTAMP" == "1" ]]; then
   framework_codesign_args+=(--timestamp)
 fi
 /usr/bin/codesign "${framework_codesign_args[@]}" "$FRAMEWORKS/Sparkle.framework"
+/usr/bin/xattr -cr "$APP_DIR"
 /usr/bin/codesign "${codesign_args[@]}" "$APP_DIR"
 "$ROOT/packaging/verify-app-bundle.sh" "$APP_DIR" "$SIGNING_DISTRIBUTION" >/dev/null
 
@@ -234,7 +248,7 @@ rm -rf "$VERIFY_ROOT"
 VERIFY_ROOT=""
 mv -f "$ARCHIVE_TMP" "$ARCHIVE"
 unregister_app_bundle "$APP_DIR"
-rm -rf "$APP_DIR"
+rm -rf "$APP_BUILD_ROOT"
 rm -f "$ROOT/dist/.metadata_never_index"
 cleanup_ci_keychain
 trap - EXIT INT TERM

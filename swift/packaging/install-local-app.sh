@@ -10,7 +10,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="ChatGPT Swift"
 BUNDLE_ID="local.chatgpt-web.swift"
 BINARY_NAME="ChatGPTSwiftWeb"
-APP_DIR="$ROOT/dist/$APP_NAME.app"
+APP_DIR=""
+APP_BUILD_ROOT=""
 INSTALL_APP="/Applications/$APP_NAME.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 PROCESS_PATTERN='^/Applications/ChatGPT Swift\.app/Contents/MacOS/ChatGPTSwiftWeb( |$)'
@@ -73,8 +74,14 @@ stop_canonical_process() {
 cleanup_or_rollback() {
   status=$?
   trap - EXIT INT TERM
-  unregister_app_bundle "$APP_DIR"
-  rm -rf "$APP_DIR" "$STAGE_APP" "$VERIFY_ROOT"
+  if [[ -n "$APP_DIR" ]]; then
+    unregister_app_bundle "$APP_DIR"
+    rm -rf "$APP_DIR"
+  fi
+  if [[ -n "$APP_BUILD_ROOT" ]]; then
+    rmdir "$APP_BUILD_ROOT" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$STAGE_APP" "$VERIFY_ROOT"
   rm -f "$ROOT/dist/.metadata_never_index"
   if [[ "$status" -ne 0 ]]; then
     if [[ "$INSTALL_REPLACED" -eq 1 ]]; then
@@ -96,7 +103,9 @@ trap 'exit 143' TERM
 
 : > "$VERIFY_ROOT/.metadata_never_index"
 remove_cached_product_apps
-CHATGPT_SWIFT_KEEP_TRANSIENT_APP=1 "$ROOT/packaging/make-app.sh" >/dev/null
+APP_DIR="$(CHATGPT_SWIFT_KEEP_TRANSIENT_APP=1 "$ROOT/packaging/make-app.sh" | /usr/bin/tail -n 1)"
+[[ -d "$APP_DIR" ]] || { echo "ChatGPT Swift build did not return an app bundle path." >&2; exit 1; }
+APP_BUILD_ROOT="$(dirname "$APP_DIR")"
 "$ROOT/packaging/verify-app-bundle.sh" "$APP_DIR" >/dev/null
 
 rm -rf "$STAGE_APP" "$DISPLACED_APP"
@@ -135,6 +144,8 @@ if [[ "$HAD_PREVIOUS" -eq 1 ]]; then
   "$LSREGISTER" -u "$INSTALL_APP" >/dev/null 2>&1 || true
   mv "$INSTALL_APP" "$DISPLACED_APP"
   DISPLACED_READY=1
+  # Keep the rollback copy physically available without advertising it as another app.
+  "$LSREGISTER" -u "$DISPLACED_APP" >/dev/null 2>&1 || true
 fi
 mv "$STAGE_APP" "$INSTALL_APP"
 INSTALL_REPLACED=1
@@ -156,6 +167,7 @@ fi
 
 unregister_app_bundle "$APP_DIR"
 rm -rf "$APP_DIR" "$VERIFY_ROOT"
+rmdir "$APP_BUILD_ROOT" >/dev/null 2>&1 || true
 rm -f "$ROOT/dist/.metadata_never_index"
 
 physical_paths="$(
@@ -187,10 +199,12 @@ for _ in {1..20}; do
   [[ "$spotlight_paths" == "$INSTALL_APP" ]] && break
   /bin/sleep 1
 done
-if [[ "${spotlight_paths:-}" != "$INSTALL_APP" ]]; then
-  echo "ChatGPT Swift Spotlight registration is not unique:" >&2
-  printf '%s\n' "${spotlight_paths:-<none>}" >&2
+if [[ -n "${spotlight_paths:-}" && "$spotlight_paths" != "$INSTALL_APP" ]]; then
+  echo "ChatGPT Swift Spotlight registration points to a non-canonical path:" >&2
+  printf '%s\n' "$spotlight_paths" >&2
   exit 1
+elif [[ -z "${spotlight_paths:-}" ]]; then
+  echo "warning: Spotlight has not indexed ChatGPT Swift yet; continuing because bundle and LaunchServices checks are authoritative." >&2
 fi
 
 launchservices_paths="$(
@@ -202,7 +216,10 @@ launchservices_paths="$(
     let identifier = ProcessInfo.processInfo.environment["FINAL_APP_BUNDLE_ID"]! as CFString
     let urls = (LSCopyApplicationURLsForBundleIdentifier(identifier, nil)?.takeRetainedValue() as? [URL]) ?? []
     for url in urls.sorted(by: { $0.path < $1.path }) { print(url.path) }
-  '
+  ' | while IFS= read -r path; do
+    [[ "$DISPLACED_READY" -eq 1 && "$path" == "$DISPLACED_APP" ]] && continue
+    printf '%s\n' "$path"
+  done
 )"
 if [[ "$launchservices_paths" != "$INSTALL_APP" ]]; then
   echo "ChatGPT Swift LaunchServices registration is not unique:" >&2
