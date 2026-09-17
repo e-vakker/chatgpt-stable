@@ -251,6 +251,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, WKNavigationDel
         }
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         if !isPopup, leanInterfaceEnabled {
+            config.mediaTypesRequiringUserActionForPlayback = [.video]
             PerformanceOptimizer.install(into: config.userContentController)
         }
 

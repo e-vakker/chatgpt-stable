@@ -144,6 +144,8 @@ final class BrowserIntegrationTests: XCTestCase {
     func testLeanInterfaceCanBeDisabledAndReenabledByRebuildingWebView() {
         let controller = BrowserWindowController()
         XCTAssertGreaterThan(controller.webView.configuration.userContentController.userScripts.count, 0)
+        XCTAssertTrue(controller.webView.configuration.mediaTypesRequiringUserActionForPlayback.contains(.video))
+        XCTAssertFalse(controller.webView.configuration.mediaTypesRequiringUserActionForPlayback.contains(.audio))
         let first = controller.webView!
         controller.setLeanInterfaceEnabled(false)
         XCTAssertFalse(first === controller.webView)
@@ -188,6 +190,25 @@ final class BrowserIntegrationTests: XCTestCase {
         controller.window.close()
     }
 
+
+    func testActivityRailKeepsOnlyLatestFortyRowsUntilExpanded() async throws {
+        let controller = BrowserWindowController()
+        controller.show(loadHome: false)
+        controller.webView.loadHTMLString(Self.syntheticToolHeavyConversation(activityCount: 90), baseURL: URL(string: "https://chatgpt.com/c/test")!)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        var rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
+        XCTAssertEqual(rows?.intValue, 41)
+        _ = try await Self.evaluate("document.querySelector('#chatgpt-stable-activity-list button').click()", in: controller.webView)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
+        XCTAssertEqual(rows?.intValue, 81)
+        _ = try await Self.evaluate("document.querySelector('#chatgpt-stable-activity-list button').click()", in: controller.webView)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        rows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
+        XCTAssertEqual(rows?.intValue, 90)
+        controller.window.close()
+    }
+
     func testActivityVirtualizationParksOlderCardsButKeepsRailIndex() async throws {
         let controller = BrowserWindowController()
         controller.show(loadHome: false)
@@ -198,6 +219,11 @@ final class BrowserIntegrationTests: XCTestCase {
         XCTAssertEqual((snapshot["activityTotal"] as? NSNumber)?.intValue, 30)
         XCTAssertEqual((snapshot["hiddenActivities"] as? NSNumber)?.intValue, 18)
         XCTAssertEqual(snapshot["activityMode"] as? String, "compact")
+        let header = try await Self.evaluate("document.getElementById('chatgpt-stable-activity-header').innerText", in: controller.webView) as? String
+        XCTAssertTrue(header?.contains("parked 18") == true)
+        XCTAssertTrue(header?.contains("compact") == true)
+        let bottomDistance = try await Self.evaluate("(() => { const r=document.getElementById('scroll'); return r.scrollHeight-r.scrollTop-r.clientHeight; })()", in: controller.webView) as? NSNumber
+        XCTAssertLessThanOrEqual(abs(bottomDistance?.doubleValue ?? 1000), 2)
         let railRows = try await Self.evaluate("document.querySelectorAll('#chatgpt-stable-activity-list button').length", in: controller.webView) as? NSNumber
         XCTAssertEqual(railRows?.intValue, 30)
         controller.window.close()

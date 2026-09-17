@@ -53,7 +53,8 @@ enum PerformanceOptimizer {
         hiddenActivities: 0,
         activityMode: 'all',
         activityExpanded: true,
-        showAllActivities: false
+        showAllActivities: false,
+        railKeep: 40
       };
 
       document.documentElement?.setAttribute(leanAttr, '1');
@@ -177,6 +178,9 @@ enum PerformanceOptimizer {
       };
 
       const virtualizeActivities = activities => {
+        const root = state.scrollRoot;
+        const preserveBottom = !!root && state.nearBottom;
+        const previousBottomDistance = preserveBottom ? Math.max(0, root.scrollHeight - root.scrollTop - root.clientHeight) : 0;
         if (state.showAllActivities) {
           activities.forEach(item => { pinnedActivities.add(item.node); revealActivity(item.node); });
           state.activityMode = 'all';
@@ -193,6 +197,12 @@ enum PerformanceOptimizer {
           state.activityMode = cutoff > 0 ? (state.generating ? 'streaming' : 'compact') : 'all';
         }
         state.hiddenActivities = activities.reduce((count, item) => count + (item.node.getAttribute(activityHiddenAttr) === '1' ? 1 : 0), 0);
+        if (preserveBottom) {
+          requestAnimationFrame(() => {
+            const target = Math.max(0, root.scrollHeight - root.clientHeight - previousBottomDistance);
+            if (Math.abs(root.scrollTop - target) > 1) root.scrollTop = target;
+          });
+        }
       };
 
       const activityKind = element => {
@@ -263,6 +273,8 @@ enum PerformanceOptimizer {
         const extras = [];
         if (state.toolCount) extras.push(`tool ${state.toolCount}`);
         if (state.reasoningCount) extras.push(`reason ${state.reasoningCount}`);
+        if (state.hiddenActivities) extras.push(`parked ${state.hiddenActivities}`);
+        if (state.activityMode !== 'all') extras.push(state.activityMode);
         const detail = extras.length ? ` · ${extras.join(' · ')}` : '';
         header.replaceChildren(document.createTextNode(`${status} · ${activities.length}${detail}`));
         list.hidden = !state.activityExpanded;
@@ -271,7 +283,19 @@ enum PerformanceOptimizer {
         const revealLabel = state.showAllActivities ? 'Compact activity' : `Show all activity (${state.hiddenActivities} parked)`;
         reveal.replaceChildren(document.createTextNode(revealLabel));
         list.replaceChildren();
-        activities.forEach((item, index) => {
+        const start = Math.max(0, activities.length - state.railKeep);
+        if (start > 0) {
+          const earlier = document.createElement('button');
+          earlier.type = 'button';
+          earlier.replaceChildren(document.createTextNode(`Earlier activity (${start})`));
+          earlier.addEventListener('click', () => {
+            state.railKeep += 40;
+            updateActivityRail(state.activityNodes);
+          });
+          list.appendChild(earlier);
+        }
+        activities.slice(start).forEach((item, offset) => {
+          const index = start + offset;
           const button = document.createElement('button');
           button.type = 'button';
           const suffix = index === activities.length - 1 && state.generating ? ' · active' : '';
@@ -411,6 +435,7 @@ enum PerformanceOptimizer {
         state.hidden = 0;
         state.mode = 'native';
         state.showAllActivities = false;
+        state.railKeep = 40;
       };
 
       const scan = () => {
